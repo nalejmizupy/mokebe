@@ -1,0 +1,55 @@
+[StructLayout(LayoutKind.Sequential)]
+public struct RECT
+{
+    public int Left;
+    public int Top;
+    public int Right;
+    public int Bottom;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct VIDEOINFOHEADER
+{
+    public RECT rcFrame; // Ramka wideo
+    public int dwWidth; // Szerokość
+    public int dwHeight; // Wysokość
+    public int dwBitRate; // Prędkość bitów
+    public int dwBitCount; // Liczba bitów na piksel
+    public int dwSuggestedBufferSize; // Sugestia rozmiaru bufora
+    public int dwQuality; // Jakość wideo
+    public int dwFlags; // Flagi
+    public int dwReserved1;
+    public int dwReserved2;
+    public int dwFormatSize; // Rozmiar formatu
+    public int dwSampleSize; // Rozmiar próbki
+    public int dwReserved3;
+}
+
+// Inicjalizacja
+public void Init(int windowHeight, int windowWidth, int handle) 
+{ 
+    string deviceIndex = Convert.ToString(this.index); 
+    deviceHandle = capCreateCaptureWindowA(ref deviceIndex, WS_VISIBLE | WS_CHILD, 0, 0, windowWidth, windowHeight, handle, 0); 
+
+    if (SendMessage(deviceHandle, WM_CAP_DRIVER_CONNECT, this.index, 0) > 0) 
+    {
+        // Ustawienie rozdzielczości
+        VIDEOINFOHEADER vHeader = new VIDEOINFOHEADER();
+        vHeader.rcFrame = new RECT { Left = 0, Top = 0, Right = 1920, Bottom = 1080 };
+        vHeader.dwWidth = 1920;
+        vHeader.dwHeight = 1080;
+        vHeader.dwBitRate = 5000000; // Prędkość bitów (5 Mbps)
+        vHeader.dwBitCount = 24; // 24 bity na piksel (RGB)
+        vHeader.dwSuggestedBufferSize = vHeader.dwWidth * vHeader.dwHeight * 3; // Zakładając RGB
+        vHeader.dwQuality = 10000; // Wysoka jakość
+        vHeader.dwFormatSize = Marshal.SizeOf(vHeader);
+        
+        SendMessage(deviceHandle, WM_CAP_SET_VIDEOFORMAT, vHeader.dwFormatSize, ref vHeader);
+
+        // Kontynuuj z resztą inicjalizacji
+        SendMessage(deviceHandle, WM_CAP_SET_PREVIEWRATE, 0x42, 0); 
+        SendMessage(deviceHandle, WM_CAP_SET_SCALE, 1, 0);
+        SendMessage(deviceHandle, WM_CAP_SET_PREVIEW, -1, 0);
+        SetWindowPos(deviceHandle, 1, 0, 0, windowWidth, windowHeight, 6); 
+    } 
+}
