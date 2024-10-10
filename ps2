@@ -1,0 +1,91 @@
+# Enable Debug Mode (set to $true for detailed logging)
+$DebugMode = $true
+
+# Workspace and paths
+$workspace = "c:\data\runspace"
+$scriptname = "check.ps1"
+$pclist = Get-Content "$workspace\lista.txt"
+$Throttle = 1   # Adjust this based on testing
+
+# CSV Report File Path
+$timestamp = Get-Date -UFormat "%Y-%m-%d_%H%M"
+$csvReportFile = "$workspace\report\report_${timestamp}.csv"
+
+# Debug information
+if ($DebugMode) {
+    Write-Host "Debug: Initializing the process..."
+    Write-Host "CSV Report File Path: $csvReportFile"
+}
+
+# Define the runspace pool
+$RunspacePool = [runspacefactory]::CreateRunspacePool(1, $Throttle)
+$RunspacePool.Open()
+
+# Define the scriptblock to run on each machine
+$scriptblock = {
+    Param ($PC)
+
+    try {
+        # Remote command execution (Invoke-Command)
+        $result = Invoke-Command -ComputerName $PC -ScriptBlock { hostname } -ErrorAction Stop
+        return @{ ComputerName = $PC; Status = "Success"; Result = $result }
+    }
+    catch {
+        return @{ ComputerName = $PC; Status = "Error"; Result = $_.Exception.Message }
+    }
+}
+
+# Loop through each PC in the list, creating runspaces
+$RSArrayList = @()
+foreach ($PC in $pclist) {
+    $PowerShell = [powershell]::Create()
+    $PowerShell.AddScript($scriptblock) | out-null
+    $PowerShell.AddArgument($PC) | out-null
+
+    $PowerShell.RunspacePool = $RunspacePool
+
+    $ThisRS = New-Object psobject -Property @{ Computer = $PC; PSInstance = $PowerShell; Space = $PowerShell.BeginInvoke() }
+    $RSArrayList += $ThisRS
+
+    if ($DebugMode) {
+        Write-Host "Debug: Added $PC to runspace."
+    }
+}
+
+# Wait for all runspaces to complete
+Write-Host "Waiting for all runspaces to finish..."
+
+$results = @()
+
+foreach ($RS in $RSArrayList) {
+    try {
+        # Wait for each runspace to finish execution
+        $result = $RS.PSInstance.EndInvoke($RS.Space)
+        $RS.PSInstance.Dispose()
+
+        # Prepare output without unnecessary properties
+        if ($result) {
+            $results += [PSCustomObject]@{
+                ComputerName = $result.ComputerName
+                Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                Status = $result.Status
+                Result = $result.Result
+            }
+
+            # Write to console
+            Write-Host "[$($results[-1].Timestamp)] $($results[-1].ComputerName) - $($results[-1].Status): $($results[-1].Result)"
+        }
+    }
+    catch {
+        Write-Host "Error processing $($RS.Computer): $_"
+    }
+}
+
+# Write all results to CSV
+$results | Export-Csv -Path $csvReportFile -NoTypeInformation
+
+# Cleanup
+$RunspacePool.Close()
+$RunspacePool.Dispose()
+
+Write-Host "Processing complete. Check CSV file for details."
