@@ -1,0 +1,178 @@
+# Enable Debug Mode (set to $true for detailed logging)
+$DebugMode = $true
+
+# Include all results or only success (set to $true to include all)
+$IncludeAllResults = $true
+
+# Workspace and paths
+$workspace = "c:\data\runspace"
+$scriptname = "check.ps1"
+$pclist = GET-CONTENT "$workspace\lista.txt"
+$Throttle = 222   # Number of concurrent runspaces
+
+# Timestamp for report filenames
+$timestamp = Get-Date -UFormat "%Y-%m-%d_%H%M"
+$csvReportFile = "$workspace\report\report_${timestamp}.csv"
+$offlineCsvFile = "$workspace\report\offline_${timestamp}.csv"
+
+# Creating a DataTable to store results
+$DataTable = New-Object System.Data.DataTable
+[void]$DataTable.Columns.Add("ComputerName", [string])
+[void]$DataTable.Columns.Add("Timestamp", [string])
+[void]$DataTable.Columns.Add("Status", [string])
+[void]$DataTable.Columns.Add("Result", [string])
+
+$offlineWorkstations = @()
+
+# Debug information
+if ($DebugMode) {
+    Write-Host "Debug: Initializing the process..."
+    Write-Host "CSV Report File Path: $csvReportFile"
+    Write-Host "Offline CSV File Path: $offlineCsvFile"
+}
+
+# Define the runspace pool
+$RunspacePool = [runspacefactory]::CreateRunspacePool(1, $Throttle)
+$RunspacePool.Open()
+
+# ArrayList to store runspaces
+$RSArrayList = New-Object System.Collections.ArrayList  
+
+# Define the scriptblock to run on each machine
+$scriptblock = {
+    Param (
+        $nothing,
+        $PC,
+        $workspace,
+        $scriptname
+    )          
+
+	#Scriptblock for Invoke-Command
+		$InvokeCommandScriptblock={hostname}
+
+    try {
+        # Check if machine is online
+        if (((Get-WmiObject win32_computersystem -ComputerName $PC -ErrorAction SilentlyContinue).Name) -eq $PC) {
+            # Remote command execution (Invoke-Command)
+            $result = Invoke-Command -ComputerName $PC -ScriptBlock $InvokeCommandScriptblock
+            return $result
+        } else {
+            return "Offline"
+        }
+    }
+    catch {
+        return "Error: $_"
+    }
+}
+
+# Loop through each PC in the list, creating runspaces
+foreach ($PC in $PClist) {
+    $PowerShell = [powershell]::Create()
+    [void]$PowerShell.AddScript($scriptblock)
+    [void]$powershell.AddArgument("").AddArgument($PC).AddArgument($workspace).AddArgument($scriptname)
+
+    $PowerShell.RunspacePool = $RunspacePool
+
+    $ThisRS = New-Object psobject
+    $ThisRS | Add-Member Computer $PC
+    $ThisRS | Add-Member PSInstance $PowerShell
+    $ThisRS | Add-Member Space ($PowerShell.BeginInvoke())  # Execution starts here
+    $ThisRS | Add-Member Processed $false  # Track if already processed
+
+    $RSArrayList += $ThisRS
+    if ($DebugMode) {
+        Write-Host "Debug: Added $PC to runspace."
+    }
+}
+
+# Fix to handle runspace completion without modifying the list
+
+Write-Host "Waiting for all runspaces to finish..."
+
+# Variable to track completed runspaces
+$completedRunspaces = 0
+
+while ($completedRunspaces -lt $RSArrayList.Count) {
+    for ($i = 0; $i -lt $RSArrayList.Count; $i++) {
+        $RS = $RSArrayList[$i]
+
+        # Check if the runspace has already been completed
+        if ($RS.PSObject.Properties['Completed'] -and $RS.Completed) {
+            continue
+        }
+
+        if ($RS.Space.IsCompleted) {
+            # Mark the runspace as completed
+            $RS | Add-Member -NotePropertyName "Completed" -NotePropertyValue $true -Force
+            $completedRunspaces++
+
+            # Process the result of the completed runspace
+            $PC = $RS.Computer
+            $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+            try {
+                # Get the result of the runspace
+                $result = $RS.PSInstance.EndInvoke($RS.Space)
+                $RS.PSInstance.Dispose()
+
+                # Determine the status and log accordingly
+                if ($result -eq "Offline") {
+                    $row = $DataTable.NewRow()
+                    $row.ComputerName = $PC
+                    $row.Timestamp = $timestamp
+                    $row.Status = "Offline"
+                    $row.Result = "No Response"
+                    $DataTable.Rows.Add($row)
+                    $offlineWorkstations += $PC
+                    Write-Host "[$timestamp] $PC - Offline (No Response)"
+                }
+                elseif ($result -like "Error*") {
+                    $row = $DataTable.NewRow()
+                    $row.ComputerName = $PC
+                    $row.Timestamp = $timestamp
+                    $row.Status = "Error"
+                    $row.Result = $result
+                    $DataTable.Rows.Add($row)
+                    Write-Host "[$timestamp] $PC - Error: $result"
+                }
+                else {
+                    $row = $DataTable.NewRow()
+                    $row.ComputerName = $PC
+                    $row.Timestamp = $timestamp
+                    $row.Status = "Success"
+                    $row.Result = $result
+                    $DataTable.Rows.Add($row)
+                    Write-Host "[$timestamp] $PC - Success: $result"
+                }
+            }
+            catch {
+                # Handle any exceptions
+                $errorMsg = $_.Exception.Message
+                $row = $DataTable.NewRow()
+                $row.ComputerName = $PC
+                $row.Timestamp = $timestamp
+                $row.Status = "Error"
+                $row.Result = $errorMsg
+                $DataTable.Rows.Add($row)
+                Write-Host "[$timestamp] $PC - Error: $errorMsg"
+            }
+        }
+    }
+
+    # Brief sleep to prevent CPU overload
+    Start-Sleep -Seconds 1
+}
+
+Write-Host "All runspaces completed."
+
+# Write the results to CSV (Main Report)
+Write-Host "Writing results to CSV file: $csvReportFile"
+$DataTable | Export-Csv -Path $csvReportFile -NoTypeInformation
+
+# Write the offline workstations to a separate CSV file
+if ($offlineWorkstations.Count -gt 0) {
+    Write-Host "Writing offline workstations to CSV file: $offlineCsvFile"
+    $offlineWorkstations | Out-File -FilePath $offlineCsvFile
+}
+
+Write-Host "Processing complete. Check CSV files for details."
