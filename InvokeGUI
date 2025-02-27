@@ -1,0 +1,418 @@
+Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
+# Define P/Invoke methods to hide console window
+Add-Type @"
+    using System;
+    using System.Runtime.InteropServices;
+
+    public class ConsoleHelper {
+        [DllImport("kernel32.dll")]
+        public static extern IntPtr GetConsoleWindow();
+
+        [DllImport("user32.dll")]
+        public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        public const int SW_HIDE = 0;
+    }
+"@
+
+# Function to hide PowerShell console window
+function Hide-Console {
+    $consoleWindow = [ConsoleHelper]::GetConsoleWindow()
+    if ($consoleWindow -ne [IntPtr]::Zero) {
+        [ConsoleHelper]::ShowWindow($consoleWindow, [ConsoleHelper]::SW_HIDE) | Out-Null
+    }
+}
+
+# Hide console window at script start
+Hide-Console
+
+# Create main form
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "Remote Command Executor"
+$form.Size = New-Object System.Drawing.Size(600,500)
+$form.StartPosition = "CenterScreen"
+$form.MinimumSize = New-Object System.Drawing.Size(400,400)
+
+# Computer names controls
+$lblComputers = New-Object System.Windows.Forms.Label
+$lblComputers.Text = "Computer Names (separate by ; or new line):"
+$lblComputers.Location = New-Object System.Drawing.Point(10,10)
+$lblComputers.AutoSize = $true
+$form.Controls.Add($lblComputers)
+
+$btnClearComputers = New-Object System.Windows.Forms.Button
+$btnClearComputers.Text = "Clear"
+$btnClearComputers.Size = New-Object System.Drawing.Size(60,20)
+$btnClearComputers.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 70),10)
+$btnClearComputers.Anchor = 'Top,Right'
+$btnClearComputers.Add_Click({ $txtComputers.Text = "" })
+$form.Controls.Add($btnClearComputers)
+
+$txtComputers = New-Object System.Windows.Forms.TextBox
+$txtComputers.Multiline = $true
+$txtComputers.Location = New-Object System.Drawing.Point(10,30)
+$txtComputers.Size = New-Object System.Drawing.Size(560,150)
+$txtComputers.MinimumSize = New-Object System.Drawing.Size(200,50)
+$txtComputers.Anchor = 'Top,Left,Right'
+$txtComputers.ScrollBars = 'Vertical'
+$form.Controls.Add($txtComputers)
+
+# Commands controls
+$lblCommands = New-Object System.Windows.Forms.Label
+$lblCommands.Text = "Commands to Execute:"
+$lblCommands.Location = New-Object System.Drawing.Point(10,190)
+$lblCommands.AutoSize = $true
+$form.Controls.Add($lblCommands)
+
+$btnClearCommands = New-Object System.Windows.Forms.Button
+$btnClearCommands.Text = "Clear"
+$btnClearCommands.Size = New-Object System.Drawing.Size(60,20)
+$btnClearCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 160),190)
+$btnClearCommands.Anchor = 'Top,Right'
+$btnClearCommands.Add_Click({ $txtCommands.Text = "" })
+$form.Controls.Add($btnClearCommands)
+
+$btnLoadCommands = New-Object System.Windows.Forms.Button
+$btnLoadCommands.Text = "Load from File"
+$btnLoadCommands.Size = New-Object System.Drawing.Size(90,20)
+$btnLoadCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 100),190)
+$btnLoadCommands.Anchor = 'Top,Right'
+$btnLoadCommands.Add_Click({
+    try {
+        $openFileDialog = New-Object System.Windows.Forms.OpenFileDialog
+        $openFileDialog.Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*"
+        $openFileDialog.Title = "Select a command file"
+        if ($openFileDialog.ShowDialog() -eq "OK") {
+            $txtCommands.Text = Get-Content -Path $openFileDialog.FileName -Raw -ErrorAction Stop
+        }
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to load commands from file: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+$form.Controls.Add($btnLoadCommands)
+
+$txtCommands = New-Object System.Windows.Forms.TextBox
+$txtCommands.Multiline = $true
+$txtCommands.Location = New-Object System.Drawing.Point(10,210)
+$txtCommands.Size = New-Object System.Drawing.Size(560,100)
+$txtCommands.MinimumSize = New-Object System.Drawing.Size(200,50)
+$txtCommands.Anchor = 'Top,Left,Right'
+$txtCommands.ScrollBars = 'Vertical'
+$form.Controls.Add($txtCommands)
+
+# Concurrent runs control
+$lblConcurrent = New-Object System.Windows.Forms.Label
+$lblConcurrent.Text = "Max Concurrent Runs:"
+$lblConcurrent.Location = New-Object System.Drawing.Point(10,320)
+$lblConcurrent.AutoSize = $true
+$lblConcurrent.Anchor = 'Bottom,Left'
+$form.Controls.Add($lblConcurrent)
+
+$numConcurrent = New-Object System.Windows.Forms.NumericUpDown
+$numConcurrent.Minimum = 1
+$numConcurrent.Maximum = 100  # Optimized for larger runs
+$numConcurrent.Value = 20     # Default for efficiency
+$numConcurrent.Width = 50
+$numConcurrent.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 60),318)
+$numConcurrent.Anchor = 'Bottom,Right'
+$form.Controls.Add($numConcurrent)
+
+# Progress bar
+$progressBar = New-Object System.Windows.Forms.ProgressBar
+$progressBar.Location = New-Object System.Drawing.Point(10,350)
+$progressBar.Size = New-Object System.Drawing.Size(560,20)
+$progressBar.Anchor = 'Bottom,Left,Right'
+$form.Controls.Add($progressBar)
+
+# Save to CSV checkbox
+$chkSaveCsv = New-Object System.Windows.Forms.CheckBox
+$chkSaveCsv.Text = "Save Results to CSV File"
+$chkSaveCsv.Location = New-Object System.Drawing.Point(10,380)
+$chkSaveCsv.Size = New-Object System.Drawing.Size(150,20)
+$chkSaveCsv.Anchor = 'Bottom,Left'
+$form.Controls.Add($chkSaveCsv)
+
+# Run and Cancel buttons
+$btnRun = New-Object System.Windows.Forms.Button
+$btnRun.Text = "Execute"
+$btnRun.Location = New-Object System.Drawing.Point(10,410)
+$btnRun.Size = New-Object System.Drawing.Size(100,30)
+$btnRun.Anchor = 'Bottom,Left'
+$form.Controls.Add($btnRun)
+
+$btnCancel = New-Object System.Windows.Forms.Button
+$btnCancel.Text = "Cancel"
+$btnCancel.Location = New-Object System.Drawing.Point(120,410)
+$btnCancel.Size = New-Object System.Drawing.Size(100,30)
+$btnCancel.Anchor = 'Bottom,Left'
+$btnCancel.Enabled = $false
+$form.Controls.Add($btnCancel)
+
+# Status label
+$lblStatus = New-Object System.Windows.Forms.Label
+$lblStatus.Location = New-Object System.Drawing.Point(230,415)
+$lblStatus.Size = New-Object System.Drawing.Size(340,20)
+$lblStatus.Anchor = 'Bottom,Left'
+$form.Controls.Add($lblStatus)
+
+# Output form
+$script:OutputForm = New-Object System.Windows.Forms.Form
+$script:OutputForm.Text = "Command Output"
+$script:OutputForm.Size = New-Object System.Drawing.Size(800,400)
+$script:OutputForm.StartPosition = "CenterScreen"
+$script:OutputForm.MinimumSize = New-Object System.Drawing.Size(600,300)
+$script:OutputForm.FormBorderStyle = 'Sizable'
+$script:OutputForm.AutoScroll = $true  # Reverted to enable form-level scrolling
+$script:OutputForm.Add_FormClosing({ $_.Cancel = $true; $script:OutputForm.Hide() })
+$script:OutputForm.Add_Shown({ $script:OutputForm.Refresh() })
+
+$script:OutputGrid = New-Object System.Windows.Forms.DataGridView
+$script:OutputGrid.Location = New-Object System.Drawing.Point(10,10)
+$script:OutputGrid.Size = New-Object System.Drawing.Size(780,380)
+$script:OutputGrid.Anchor = 'Top,Left,Bottom,Right'
+$script:OutputGrid.ReadOnly = $true
+$script:OutputGrid.AllowUserToAddRows = $false
+$script:OutputGrid.ColumnHeadersHeightSizeMode = 'AutoSize'
+$script:OutputGrid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::AllCells
+$script:OutputGrid.ScrollBars = [System.Windows.Forms.ScrollBars]::Both
+$script:OutputGrid.Columns.Add("Computer", "Computer") | Out-Null
+$script:OutputGrid.Columns.Add("Status", "Status") | Out-Null
+$script:OutputGrid.Columns.Add("Timestamp", "Timestamp") | Out-Null
+$script:OutputGrid.Columns.Add("Output", "Output") | Out-Null
+$script:OutputForm.Controls.Add($script:OutputGrid)
+
+# Form resize event
+$form.Add_Resize({
+    $txtComputers.Width = $form.ClientSize.Width - 20
+    $txtCommands.Width = $form.ClientSize.Width - 20
+    $progressBar.Width = $form.ClientSize.Width - 20
+    $lblStatus.Width = $form.ClientSize.Width - 250
+
+    $btnClearComputers.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 70),10)
+    $btnClearCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 160), ($txtComputers.Bottom + 10))
+    $btnLoadCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 100), ($txtComputers.Bottom + 10))
+    $numConcurrent.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 60), ($txtCommands.Bottom + 8))
+
+    $bottomControlsHeight = 90
+    $availableHeight = $form.ClientSize.Height - $bottomControlsHeight - 60
+    
+    if ($availableHeight -gt 150) {
+        $txtComputers.Height = [Math]::Min($availableHeight * 0.6, 300)
+        $lblCommands.Location = New-Object System.Drawing.Point(10, ($txtComputers.Bottom + 10))
+        $txtCommands.Location = New-Object System.Drawing.Point(10, ($lblCommands.Bottom + 10))
+        $txtCommands.Height = $availableHeight - $txtComputers.Height - 40
+        
+        $lblConcurrent.Location = New-Object System.Drawing.Point(10, ($form.ClientSize.Height - 90))
+        $numConcurrent.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 60), ($form.ClientSize.Height - 92))
+        $progressBar.Location = New-Object System.Drawing.Point(10, ($form.ClientSize.Height - 70))
+        $chkSaveCsv.Location = New-Object System.Drawing.Point(10, ($form.ClientSize.Height - 50))
+        $btnRun.Location = New-Object System.Drawing.Point(10, ($form.ClientSize.Height - 30))
+        $btnCancel.Location = New-Object System.Drawing.Point(120, ($form.ClientSize.Height - 30))
+        $lblStatus.Location = New-Object System.Drawing.Point(230, ($form.ClientSize.Height - 25))
+    }
+})
+
+$script:OutputForm.Add_Resize({
+    $script:OutputGrid.Width = $script:OutputForm.ClientSize.Width - 20
+    $script:OutputGrid.Height = $script:OutputForm.ClientSize.Height - 20
+    $script:OutputForm.Refresh()
+})
+
+# Global variables
+$script:Jobs = New-Object 'System.Collections.Concurrent.ConcurrentBag[PSObject]'  # Faster for concurrent adds
+$script:Results = New-Object 'System.Collections.Generic.List[PSObject]'
+$script:RunspacePool = $null
+$script:UpdateTimer = New-Object System.Windows.Forms.Timer
+$script:IsCancelled = $false
+
+# Timer setup
+$script:UpdateTimer.Interval = 2000  # 2s for efficiency
+$script:UpdateTimer.Add_Tick({
+    try {
+        if ($script:Jobs.Count -gt 0 -and -not $script:IsCancelled) {
+            $completedJobs = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
+            $script:Jobs | Where-Object { $_.Handle.IsCompleted } | ForEach-Object { $completedJobs.Add($_) }
+            if ($completedJobs.Count -gt 0) {
+                foreach ($job in $completedJobs) {
+                    $null = $script:Jobs.TryTake([ref]$job)  # Thread-safe removal
+                    $job.PowerShell.EndInvoke($job.Handle)
+                    $job.PowerShell.Dispose()
+                    $progressBar.Value++
+                }
+
+                $currentCount = $script:OutputGrid.Rows.Count
+                $newResults = $script:Results | Select-Object -Skip $currentCount
+                foreach ($result in $newResults) {
+                    $script:OutputGrid.Rows.Add($result.ComputerName, $result.Status, $result.Timestamp, $result.Output) | Out-Null
+                }
+                if ($newResults) { 
+                    $script:OutputGrid.FirstDisplayedScrollingRowIndex = $script:OutputGrid.RowCount - 1
+                    $script:OutputForm.Refresh()
+                }
+            }
+        }
+
+        if (($script:Jobs.Count -eq 0 -or $script:IsCancelled) -and $script:UpdateTimer.Enabled) {
+            $script:UpdateTimer.Stop()
+            if ($script:RunspacePool -and $script:RunspacePool.RunspacePoolStateInfo.State -eq 'Opened') {
+                $script:RunspacePool.Close()
+                $script:RunspacePool.Dispose()
+                $script:RunspacePool = $null
+            }
+
+            if ($chkSaveCsv.Checked -and $script:Results.Count -gt 0 -and -not $script:IsCancelled) {
+                try {
+                    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+                    $csvPath = "$env:USERPROFILE\Desktop\RemoteCommandResults_$timestamp.csv"
+                    $script:Results | Export-Csv -Path $csvPath -NoTypeInformation -ErrorAction Stop
+                    $lblStatus.Text = "Completed - Results saved to: $csvPath"
+                }
+                catch {
+                    $lblStatus.Text = "Failed to save CSV: $_"
+                    Add-Content -Path "$env:TEMP\RemoteCommandErrors.log" -Value "$(Get-Date): Failed to save CSV: $_"
+                }
+            }
+            elseif ($script:IsCancelled) {
+                $lblStatus.Text = "Execution cancelled"
+            }
+            else {
+                $lblStatus.Text = "Completed"
+            }
+            $btnRun.Enabled = $true
+            $btnCancel.Enabled = $false
+            $script:IsCancelled = $false
+        }
+    }
+    catch {
+        $lblStatus.Text = "Error during execution: $_"
+        Add-Content -Path "$env:TEMP\RemoteCommandErrors.log" -Value "$(Get-Date): Error during execution: $_"
+        $script:UpdateTimer.Stop()
+        if ($script:RunspacePool) { 
+            $script:RunspacePool.Close()
+            $script:RunspacePool.Dispose()
+            $script:RunspacePool = $null
+        }
+        $btnRun.Enabled = $true
+        $btnCancel.Enabled = $false
+    }
+    finally {
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+})
+
+# Reset function
+function Reset-ScriptState {
+    if ($script:UpdateTimer.Enabled) { $script:UpdateTimer.Stop() }
+    if ($script:RunspacePool -and $script:RunspacePool.RunspacePoolStateInfo.State -eq 'Opened') {
+        $script:RunspacePool.Close()
+        $script:RunspacePool.Dispose()
+        $script:RunspacePool = $null
+    }
+    $script:Jobs = New-Object 'System.Collections.Concurrent.ConcurrentBag[PSObject]'
+    $script:Results.Clear()
+    $script:IsCancelled = $false
+    $progressBar.Value = 0
+    $lblStatus.Text = ""
+    $btnRun.Enabled = $true
+    $btnCancel.Enabled = $false
+    $script:OutputGrid.Rows.Clear()
+    $script:OutputForm.Refresh()
+}
+
+# Button click events
+$btnRun.Add_Click({
+    Reset-ScriptState
+
+    $computers = $txtComputers.Text -split '[;\r\n]' | Where-Object { $_ -ne "" }
+    $commands = $txtCommands.Text -split '[\r\n]' | Where-Object { $_ -ne "" }
+    
+    if ($computers.Count -eq 0 -or $commands.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("Please enter computer names and commands.", "Input Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+
+    $invalidComputers = $computers | Where-Object { $_ -match '[^\w\.-]' }
+    if ($invalidComputers) {
+        [System.Windows.Forms.MessageBox]::Show("Invalid computer names detected: $($invalidComputers -join ', ')", "Validation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+
+    $progressBar.Maximum = $computers.Count
+    $btnRun.Enabled = $false
+    $btnCancel.Enabled = $true
+    $script:OutputForm.Show()
+    $script:OutputForm.Refresh()
+
+    if (-not $script:RunspacePool -or $script:RunspacePool.IsDisposed) {
+        $script:RunspacePool = [RunspaceFactory]::CreateRunspacePool(1, $numConcurrent.Value)
+        $script:RunspacePool.Open()
+    }
+    $script:Jobs = New-Object 'System.Collections.Concurrent.ConcurrentBag[PSObject]'
+    $script:Results = New-Object 'System.Collections.Generic.List[PSObject]'
+
+    foreach ($computer in $computers) {
+        $computer = $computer.Trim()
+        $powershell = [PowerShell]::Create().AddScript({
+            param($comp, $cmds, $resultsList)
+            try {
+                $output = Invoke-Command -ComputerName $comp -ScriptBlock {
+                    param($commands)
+                    $cmdResults = @()
+                    foreach ($cmd in $commands) {
+                        $result = Invoke-Expression $cmd -ErrorAction Stop
+                        $cmdResults += [PSCustomObject]@{
+                            Output = if ($result) { $result | Out-String } else { "" }
+                        }
+                    }
+                    return $cmdResults
+                } -ArgumentList (,$cmds) -ErrorAction Stop -SessionOption (New-PSSessionOption -OperationTimeout 30000)
+                foreach ($result in $output) {
+                    $resultsList.Add([PSCustomObject]@{
+                        ComputerName = $comp
+                        Output = $result.Output
+                        Status = "Success"
+                        Timestamp = Get-Date
+                    })
+                }
+            }
+            catch {
+                $resultsList.Add([PSCustomObject]@{
+                    ComputerName = $comp
+                    Output = $_.Exception.Message
+                    Status = if ($_.Exception -match "not online") { "Offline" } elseif ($_.Exception -match "timeout") { "Timeout" } else { "Error" }
+                    Timestamp = Get-Date
+                })
+            }
+        }).AddParameter("comp", $computer).AddParameter("cmds", $commands).AddParameter("resultsList", $script:Results)
+        
+        $powershell.RunspacePool = $script:RunspacePool
+        $script:Jobs.Add([PSCustomObject]@{
+            PowerShell = $powershell
+            Handle = $powershell.BeginInvoke()
+        })
+    }
+
+    $script:UpdateTimer.Start()
+})
+
+$btnCancel.Add_Click({
+    $script:IsCancelled = $true
+    $lblStatus.Text = "Cancelling execution..."
+})
+
+# Clean up on form close
+$form.Add_FormClosing({
+    if ($script:UpdateTimer.Enabled) { $script:UpdateTimer.Stop() }
+    if ($script:RunspacePool -and $script:RunspacePool.RunspacePoolStateInfo.State -eq 'Opened') {
+        $script:RunspacePool.Close()
+        $script:RunspacePool.Dispose()
+    }
+    $script:UpdateTimer.Dispose()
+    $script:OutputForm.Close()
+})
+
+# Show the form
+$form.ShowDialog()
