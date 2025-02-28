@@ -363,7 +363,7 @@ $script:UpdateTimer.Add_Tick({
                 }
                 catch {
                     $lblStatus.Text = "Failed to save CSV: $_"
-                    Add-Content -Path "$env:TEMP\RemoteCommandErrors.log" -Value "$(Get-Date): Failed to save CSV: $_"
+                    Add-Content -Path "$env:USERPROFILE\Desktop\RemoteICM\RemoteCommandErrors.log" -Value "$(Get-Date): Failed to save CSV: $_"
                 }
             }
             elseif ($script:IsCancelled) {
@@ -379,7 +379,7 @@ $script:UpdateTimer.Add_Tick({
     }
     catch {
         $lblStatus.Text = "Error during execution: $_"
-        Add-Content -Path "$env:TEMP\RemoteCommandErrors.log" -Value "$(Get-Date): Error during execution: $_"
+        Add-Content -Path "$env:USERPROFILE\Desktop\RemoteICM\RemoteCommandErrors.log" -Value "$(Get-Date): Error during execution: $_"
         $script:UpdateTimer.Stop()
         if ($script:RunspacePool) { 
             $script:RunspacePool.Close()
