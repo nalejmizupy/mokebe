@@ -45,10 +45,55 @@ $form.Controls.Add($lblComputers)
 $btnClearComputers = New-Object System.Windows.Forms.Button
 $btnClearComputers.Text = "Clear"
 $btnClearComputers.Size = New-Object System.Drawing.Size(60,20)
-$btnClearComputers.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 70),10)
+$btnClearComputers.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 62),10)
 $btnClearComputers.Anchor = 'Top,Right'
 $btnClearComputers.Add_Click({ $txtComputers.Text = "" })
 $form.Controls.Add($btnClearComputers)
+
+$btnImportLastList = New-Object System.Windows.Forms.Button
+$btnImportLastList.Text = "Import Last"
+$btnImportLastList.Size = New-Object System.Drawing.Size(80,20)
+$btnImportLastList.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 144),10)
+$btnImportLastList.Anchor = 'Top,Right'
+$btnImportLastList.Add_Click({
+    try {
+        $lastListPath = "$env:USERPROFILE\Desktop\RemoteICM\lastLIST.txt"
+        if (Test-Path $lastListPath) {
+            $txtComputers.Text = Get-Content -Path $lastListPath -Raw -ErrorAction Stop
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("Last computer list not found.", "Info", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        }
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to import last computer list: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+$form.Controls.Add($btnImportLastList)
+
+$btnImportAD = New-Object System.Windows.Forms.Button
+$btnImportAD.Text = "Import AD"
+$btnImportAD.Size = New-Object System.Drawing.Size(80,20)
+$btnImportAD.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 226),10)
+$btnImportAD.Anchor = 'Top,Right'
+$btnImportAD.Add_Click({
+    try {
+        if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
+            throw "ActiveDirectory module not found. Please ensure it's installed."
+        }
+        Import-Module ActiveDirectory -ErrorAction Stop
+        $computers = Get-ADComputer -Filter {Enabled -eq $true -and OperatingSystem -like "*Windows 11*"} -Properties Name | 
+            Select-Object -ExpandProperty Name | Sort-Object
+        if ($computers.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("No enabled Windows 11 computers found in AD.", "Info", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        } else {
+            $txtComputers.Text = $computers -join "`r`n"
+        }
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to import AD computers: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+$form.Controls.Add($btnImportAD)
 
 $txtComputers = New-Object System.Windows.Forms.TextBox
 $txtComputers.Multiline = $true
@@ -69,7 +114,7 @@ $form.Controls.Add($lblCommands)
 $btnClearCommands = New-Object System.Windows.Forms.Button
 $btnClearCommands.Text = "Clear"
 $btnClearCommands.Size = New-Object System.Drawing.Size(60,20)
-$btnClearCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 160),190)
+$btnClearCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 62),190)
 $btnClearCommands.Anchor = 'Top,Right'
 $btnClearCommands.Add_Click({ $txtCommands.Text = "" })
 $form.Controls.Add($btnClearCommands)
@@ -77,12 +122,12 @@ $form.Controls.Add($btnClearCommands)
 $btnLoadCommands = New-Object System.Windows.Forms.Button
 $btnLoadCommands.Text = "Load from File"
 $btnLoadCommands.Size = New-Object System.Drawing.Size(90,20)
-$btnLoadCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 100),190)
+$btnLoadCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 154),190)
 $btnLoadCommands.Anchor = 'Top,Right'
 $btnLoadCommands.Add_Click({
     try {
         $openFileDialog = New-Object System.Windows.Forms.OpenFileDialog
-        $openFileDialog.Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*"
+        $openFileDialog.Filter = "Common types (*.txt;*.bat;*.ps1)|*.txt;*.bat;*.ps1|All files (*.*)|*.*"
         $openFileDialog.Title = "Select a command file"
         if ($openFileDialog.ShowDialog() -eq "OK") {
             $txtCommands.Text = Get-Content -Path $openFileDialog.FileName -Raw -ErrorAction Stop
@@ -93,6 +138,46 @@ $btnLoadCommands.Add_Click({
     }
 })
 $form.Controls.Add($btnLoadCommands)
+
+$btnGetWorkstationInfo = New-Object System.Windows.Forms.Button
+$btnGetWorkstationInfo.Text = "GetWorkstationInfo"
+$btnGetWorkstationInfo.Size = New-Object System.Drawing.Size(110,20)
+$btnGetWorkstationInfo.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 266),190)
+$btnGetWorkstationInfo.Anchor = 'Top,Right'
+$btnGetWorkstationInfo.Add_Click({
+    try {
+        $infoPath = "$env:USERPROFILE\Desktop\RemoteICM\GetWorkstationInfo.ps1"
+        if (Test-Path $infoPath) {
+            $txtCommands.Text = Get-Content -Path $infoPath -Raw -ErrorAction Stop
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("GetWorkstationInfo.ps1 not found in $env:USERPROFILE\Desktop\RemoteICM.", "Info", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        }
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to import GetWorkstationInfo.ps1: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+$form.Controls.Add($btnGetWorkstationInfo)
+
+$btnImportLastPS = New-Object System.Windows.Forms.Button
+$btnImportLastPS.Text = "Import Last"
+$btnImportLastPS.Size = New-Object System.Drawing.Size(80,20)
+$btnImportLastPS.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 348),190)
+$btnImportLastPS.Anchor = 'Top,Right'
+$btnImportLastPS.Add_Click({
+    try {
+        $lastPSPath = "$env:USERPROFILE\Desktop\RemoteICM\lastPS.ps1"
+        if (Test-Path $lastPSPath) {
+            $txtCommands.Text = Get-Content -Path $lastPSPath -Raw -ErrorAction Stop
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("Last command file not found.", "Info", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        }
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to import last commands: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+$form.Controls.Add($btnImportLastPS)
 
 $txtCommands = New-Object System.Windows.Forms.TextBox
 $txtCommands.Multiline = $true
@@ -113,8 +198,8 @@ $form.Controls.Add($lblConcurrent)
 
 $numConcurrent = New-Object System.Windows.Forms.NumericUpDown
 $numConcurrent.Minimum = 1
-$numConcurrent.Maximum = 100  # Optimized for larger runs
-$numConcurrent.Value = 20     # Default for efficiency
+$numConcurrent.Maximum = 100
+$numConcurrent.Value = 20
 $numConcurrent.Width = 50
 $numConcurrent.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 60),318)
 $numConcurrent.Anchor = 'Bottom,Right'
@@ -139,14 +224,14 @@ $form.Controls.Add($chkSaveCsv)
 $btnRun = New-Object System.Windows.Forms.Button
 $btnRun.Text = "Execute"
 $btnRun.Location = New-Object System.Drawing.Point(10,410)
-$btnRun.Size = New-Object System.Drawing.Size(100,30)
+$btnRun.Size = New-Object System.Drawing.Size(100,20)
 $btnRun.Anchor = 'Bottom,Left'
 $form.Controls.Add($btnRun)
 
 $btnCancel = New-Object System.Windows.Forms.Button
 $btnCancel.Text = "Cancel"
 $btnCancel.Location = New-Object System.Drawing.Point(120,410)
-$btnCancel.Size = New-Object System.Drawing.Size(100,30)
+$btnCancel.Size = New-Object System.Drawing.Size(100,20)
 $btnCancel.Anchor = 'Bottom,Left'
 $btnCancel.Enabled = $false
 $form.Controls.Add($btnCancel)
@@ -154,7 +239,7 @@ $form.Controls.Add($btnCancel)
 # Status label
 $lblStatus = New-Object System.Windows.Forms.Label
 $lblStatus.Location = New-Object System.Drawing.Point(230,415)
-$lblStatus.Size = New-Object System.Drawing.Size(340,20)
+$lblStatus.Size = New-Object System.Drawing.Size(400,20)
 $lblStatus.Anchor = 'Bottom,Left'
 $form.Controls.Add($lblStatus)
 
@@ -165,7 +250,7 @@ $script:OutputForm.Size = New-Object System.Drawing.Size(800,400)
 $script:OutputForm.StartPosition = "CenterScreen"
 $script:OutputForm.MinimumSize = New-Object System.Drawing.Size(600,300)
 $script:OutputForm.FormBorderStyle = 'Sizable'
-$script:OutputForm.AutoScroll = $true  # Reverted to enable form-level scrolling
+$script:OutputForm.AutoScroll = $true
 $script:OutputForm.Add_FormClosing({ $_.Cancel = $true; $script:OutputForm.Hide() })
 $script:OutputForm.Add_Shown({ $script:OutputForm.Refresh() })
 
@@ -189,11 +274,15 @@ $form.Add_Resize({
     $txtComputers.Width = $form.ClientSize.Width - 20
     $txtCommands.Width = $form.ClientSize.Width - 20
     $progressBar.Width = $form.ClientSize.Width - 20
-    $lblStatus.Width = $form.ClientSize.Width - 250
+    $lblStatus.Width = $form.ClientSize.Width - 190
 
-    $btnClearComputers.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 70),10)
-    $btnClearCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 160), ($txtComputers.Bottom + 10))
-    $btnLoadCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 100), ($txtComputers.Bottom + 10))
+    $btnClearComputers.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 62),10)
+    $btnImportLastList.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 144),10)
+    $btnImportAD.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 226),10)
+    $btnClearCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 62), ($txtComputers.Bottom + 10))
+    $btnLoadCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 154), ($txtComputers.Bottom + 10))
+    $btnGetWorkstationInfo.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 266), ($txtComputers.Bottom + 10))
+    $btnImportLastPS.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 348), ($txtComputers.Bottom + 10))
     $numConcurrent.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 60), ($txtCommands.Bottom + 8))
 
     $bottomControlsHeight = 90
@@ -211,7 +300,7 @@ $form.Add_Resize({
         $chkSaveCsv.Location = New-Object System.Drawing.Point(10, ($form.ClientSize.Height - 50))
         $btnRun.Location = New-Object System.Drawing.Point(10, ($form.ClientSize.Height - 30))
         $btnCancel.Location = New-Object System.Drawing.Point(120, ($form.ClientSize.Height - 30))
-        $lblStatus.Location = New-Object System.Drawing.Point(230, ($form.ClientSize.Height - 25))
+        $lblStatus.Location = New-Object System.Drawing.Point(230, ($form.ClientSize.Height - 115))
     }
 })
 
@@ -222,14 +311,14 @@ $script:OutputForm.Add_Resize({
 })
 
 # Global variables
-$script:Jobs = New-Object 'System.Collections.Concurrent.ConcurrentBag[PSObject]'  # Faster for concurrent adds
+$script:Jobs = New-Object 'System.Collections.Concurrent.ConcurrentBag[PSObject]'
 $script:Results = New-Object 'System.Collections.Generic.List[PSObject]'
 $script:RunspacePool = $null
 $script:UpdateTimer = New-Object System.Windows.Forms.Timer
 $script:IsCancelled = $false
 
 # Timer setup
-$script:UpdateTimer.Interval = 2000  # 2s for efficiency
+$script:UpdateTimer.Interval = 2000
 $script:UpdateTimer.Add_Tick({
     try {
         if ($script:Jobs.Count -gt 0 -and -not $script:IsCancelled) {
@@ -237,7 +326,7 @@ $script:UpdateTimer.Add_Tick({
             $script:Jobs | Where-Object { $_.Handle.IsCompleted } | ForEach-Object { $completedJobs.Add($_) }
             if ($completedJobs.Count -gt 0) {
                 foreach ($job in $completedJobs) {
-                    $null = $script:Jobs.TryTake([ref]$job)  # Thread-safe removal
+                    $null = $script:Jobs.TryTake([ref]$job)
                     $job.PowerShell.EndInvoke($job.Handle)
                     $job.PowerShell.Dispose()
                     $progressBar.Value++
@@ -265,8 +354,10 @@ $script:UpdateTimer.Add_Tick({
 
             if ($chkSaveCsv.Checked -and $script:Results.Count -gt 0 -and -not $script:IsCancelled) {
                 try {
+                    $remoteICMDir = "$env:USERPROFILE\Desktop\RemoteICM"
+                    if (-not (Test-Path $remoteICMDir)) { New-Item -Path $remoteICMDir -ItemType Directory -Force | Out-Null }
                     $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-                    $csvPath = "$env:USERPROFILE\Desktop\RemoteCommandResults_$timestamp.csv"
+                    $csvPath = "$remoteICMDir\RemoteCommandResults_$timestamp.csv"
                     $script:Results | Export-Csv -Path $csvPath -NoTypeInformation -ErrorAction Stop
                     $lblStatus.Text = "Completed - Results saved to: $csvPath"
                 }
@@ -338,6 +429,17 @@ $btnRun.Add_Click({
     if ($invalidComputers) {
         [System.Windows.Forms.MessageBox]::Show("Invalid computer names detected: $($invalidComputers -join ', ')", "Validation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
         return
+    }
+
+    # Save last computer list and commands
+    try {
+        $remoteICMDir = "$env:USERPROFILE\Desktop\RemoteICM"
+        if (-not (Test-Path $remoteICMDir)) { New-Item -Path $remoteICMDir -ItemType Directory -Force | Out-Null }
+        $txtComputers.Text | Out-File -FilePath "$remoteICMDir\lastLIST.txt" -Encoding UTF8 -ErrorAction Stop
+        $txtCommands.Text | Out-File -FilePath "$remoteICMDir\lastPS.ps1" -Encoding UTF8 -ErrorAction Stop
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to save last list/commands: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 
     $progressBar.Maximum = $computers.Count
