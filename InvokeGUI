@@ -418,9 +418,10 @@ $btnRun.Add_Click({
     Reset-ScriptState
 
     $computers = $txtComputers.Text -split '[;\r\n]' | Where-Object { $_ -ne "" }
-    $commands = $txtCommands.Text -split '[\r\n]' | Where-Object { $_ -ne "" }
+    # Preserve the entire command text as a single script block instead of splitting
+    $commandText = $txtCommands.Text.Trim()
     
-    if ($computers.Count -eq 0 -or $commands.Count -eq 0) {
+    if ($computers.Count -eq 0 -or [string]::IsNullOrWhiteSpace($commandText)) {
         [System.Windows.Forms.MessageBox]::Show("Please enter computer names and commands.", "Input Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
         return
     }
@@ -458,27 +459,27 @@ $btnRun.Add_Click({
     foreach ($computer in $computers) {
         $computer = $computer.Trim()
         $powershell = [PowerShell]::Create().AddScript({
-            param($comp, $cmds, $resultsList)
+            param($comp, $cmdText, $resultsList)
             try {
-                $output = Invoke-Command -ComputerName $comp -ScriptBlock {
-                    param($commands)
-                    $cmdResults = @()
-                    foreach ($cmd in $commands) {
-                        $result = Invoke-Expression $cmd -ErrorAction Stop
-                        $cmdResults += [PSCustomObject]@{
-                            Output = if ($result) { $result | Out-String } else { "" }
-                        }
-                    }
-                    return $cmdResults
-                } -ArgumentList (,$cmds) -ErrorAction Stop -SessionOption (New-PSSessionOption -OperationTimeout 30000)
-                foreach ($result in $output) {
-                    $resultsList.Add([PSCustomObject]@{
-                        ComputerName = $comp
-                        Output = $result.Output
-                        Status = "Success"
-                        Timestamp = Get-Date
-                    })
-                }
+                # Create a script block from the entire command text
+                $scriptBlock = [ScriptBlock]::Create($cmdText)
+									 
+												 
+																		  
+														 
+																					  
+						 
+					 
+									  
+                $output = Invoke-Command -ComputerName $comp -ScriptBlock $scriptBlock -ErrorAction Stop -SessionOption (New-PSSessionOption -OperationTimeout 30000)
+                
+                $resultsList.Add([PSCustomObject]@{
+                    ComputerName = $comp
+                    Output = if ($output) { $output | Out-String } else { "" }
+                    Status = "Success"
+                    Timestamp = Get-Date
+                })
+				 
             }
             catch {
                 $resultsList.Add([PSCustomObject]@{
@@ -488,7 +489,7 @@ $btnRun.Add_Click({
                     Timestamp = Get-Date
                 })
             }
-        }).AddParameter("comp", $computer).AddParameter("cmds", $commands).AddParameter("resultsList", $script:Results)
+        }).AddParameter("comp", $computer).AddParameter("cmdText", $commandText).AddParameter("resultsList", $script:Results)
         
         $powershell.RunspacePool = $script:RunspacePool
         $script:Jobs.Add([PSCustomObject]@{
