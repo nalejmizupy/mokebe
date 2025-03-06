@@ -312,93 +312,71 @@ $script:OutputForm.Add_Resize({
 
 # Global variables
 $script:Jobs = New-Object 'System.Collections.Concurrent.ConcurrentBag[PSObject]'
-$script:Results = New-Object 'System.Collections.Generic.List[PSObject]'
+$script:Results = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
 $script:RunspacePool = $null
-$script:UpdateTimer = New-Object System.Windows.Forms.Timer
 $script:IsCancelled = $false
+$script:CompletedCount = 0
+$script:LogPath = "$env:USERPROFILE\Desktop\RemoteICM\DebugLog.txt"
+$script:CsvPath = $null
+$script:UpdateTimer = New-Object System.Windows.Forms.Timer
 
-# Timer setup
-$script:UpdateTimer.Interval = 500  # Update every 0.5 seconds for smoother feedback
+# Timer setup for non-blocking execution
+$script:UpdateTimer.Interval = 500  # Check every 0.5 seconds
 $script:UpdateTimer.Add_Tick({
-    try {
-        if ($script:Jobs.Count -gt 0 -and -not $script:IsCancelled) {
-            $completedJobs = $script:Jobs | Where-Object { $_.Handle.IsCompleted }
-            if ($completedJobs) {
-                foreach ($job in $completedJobs) {
-                    $null = $script:Jobs.TryTake([ref]$job)
-                    $job.PowerShell.EndInvoke($job.Handle)  # Ensure job completion is processed
-                    $job.PowerShell.Dispose()
-                    $progressBar.Value = [Math]::Min($progressBar.Value + 1, $progressBar.Maximum)
-                }
-
-                # Update DataGridView with all results so far
-                $currentResults = $script:Results.ToArray()
-                $newRows = $currentResults | Where-Object { -not ($script:OutputGrid.Rows | Where-Object { $_.Cells[0].Value -eq $_.ComputerName }) }
-                foreach ($result in $newRows) {
-                    $form.Invoke([Action]{ 
-                        $script:OutputGrid.Rows.Add($result.ComputerName, $result.Status, $result.Timestamp, $result.Output) | Out-Null
+    if ($script:Jobs.Count -gt 0 -and -not $script:IsCancelled) {
+        $completedJobs = $script:Jobs | Where-Object { $_.Handle.IsCompleted }
+        foreach ($job in $completedJobs) {
+            $null = $script:Jobs.TryTake([ref]$job)
+            $result = $job.PowerShell.EndInvoke($job.Handle)
+            $job.PowerShell.Dispose()
+            $script:CompletedCount++
+            Add-Content -Path $script:LogPath -Value "$(Get-Date): Job for $($job.Computer) completed, Count: $script:CompletedCount" -ErrorAction SilentlyContinue
+            
+            if ($result) {
+                $script:Results.Add($result)
+                $form.Invoke([Action]{
+                    $script:OutputGrid.Rows.Add($result.ComputerName, $result.Status, $result.Timestamp, $result.Output) | Out-Null
+                    if ($script:OutputGrid.RowCount -gt 0) {
                         $script:OutputGrid.FirstDisplayedScrollingRowIndex = [Math]::Max(0, $script:OutputGrid.RowCount - 1)
-                    })
+                    }
+                    if (($script:CompletedCount % 5) -eq 0 -or $script:CompletedCount -eq $progressBar.Maximum) {
+                        $progressBar.Value = [Math]::Min($script:CompletedCount, $progressBar.Maximum)
+                        $lblStatus.Text = "Processing... ($script:CompletedCount of $($progressBar.Maximum))"
+                    }
+                })
+
+                # Save to CSV incrementally
+                if ($chkSaveCsv.Checked -and $script:CsvPath) {
+                    try {
+                        $result | Export-Csv -Path $script:CsvPath -NoTypeInformation -Append -ErrorAction Stop
+                        Add-Content -Path $script:LogPath -Value "$(Get-Date): Appended result for $($result.ComputerName) to CSV" -ErrorAction SilentlyContinue
+                    }
+                    catch {
+                        Add-Content -Path $script:LogPath -Value "$(Get-Date): Failed to append to CSV: $_" -ErrorAction SilentlyContinue
+                    }
                 }
-                $script:OutputForm.Refresh()
-                $lblStatus.Text = "Processing... ($($progressBar.Value) of $($progressBar.Maximum))"
             }
         }
+    }
 
-        if (($script:Jobs.Count -eq 0 -or $script:IsCancelled) -and $script:UpdateTimer.Enabled) {
-            $script:UpdateTimer.Stop()
-            if ($script:RunspacePool -and $script:RunspacePool.RunspacePoolStateInfo.State -eq 'Opened') {
-                $script:RunspacePool.Close()
-                $script:RunspacePool.Dispose()
-                $script:RunspacePool = $null
-            }
-
-            # Final UI update
-            $form.Invoke([Action]{ 
-                $script:OutputGrid.Rows.Clear()
-                foreach ($result in $script:Results) {
-                    $script:OutputGrid.Rows.Add($result.ComputerName, $result.Status, $result.Timestamp, $result.Output) | Out-Null
-                }
-                $script:OutputGrid.FirstDisplayedScrollingRowIndex = [Math]::Max(0, $script:OutputGrid.RowCount - 1)
-            })
-
-            if ($chkSaveCsv.Checked -and $script:Results.Count -gt 0 -and -not $script:IsCancelled) {
-                try {
-                    $remoteICMDir = "$env:USERPROFILE\Desktop\RemoteICM"
-                    if (-not (Test-Path $remoteICMDir)) { New-Item -Path $remoteICMDir -ItemType Directory -Force | Out-Null }
-                    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-                    $csvPath = "$remoteICMDir\RemoteCommandResults_$timestamp.csv"
-                    $script:Results | Export-Csv -Path $csvPath -NoTypeInformation -ErrorAction Stop
-                    $lblStatus.Text = "Completed - Results saved to: $csvPath"
-                }
-                catch {
-                    $lblStatus.Text = "Failed to save CSV: $_"
-                }
-            }
-            elseif ($script:IsCancelled) {
+    if ($script:Jobs.Count -eq 0 -or $script:IsCancelled) {
+        $script:UpdateTimer.Stop()
+        $form.Invoke([Action]{
+            if ($script:IsCancelled) {
                 $lblStatus.Text = "Execution cancelled"
-            }
-            else {
-                $lblStatus.Text = "Completed"
+            } else {
+                $lblStatus.Text = if ($chkSaveCsv.Checked -and $script:CsvPath) { "Completed - Results saved to: $script:CsvPath" } else { "Completed" }
             }
             $btnRun.Enabled = $true
             $btnCancel.Enabled = $false
-            $script:IsCancelled = $false
-        }
-    }
-    catch {
-        $lblStatus.Text = "Error during execution: $_"
-        $script:UpdateTimer.Stop()
-        if ($script:RunspacePool) { 
+        })
+        if ($script:RunspacePool -and $script:RunspacePool.RunspacePoolStateInfo.State -eq 'Opened') {
             $script:RunspacePool.Close()
             $script:RunspacePool.Dispose()
             $script:RunspacePool = $null
         }
-        $btnRun.Enabled = $true
-        $btnCancel.Enabled = $false
-    }
-    finally {
-        [System.Windows.Forms.Application]::DoEvents()
+        $script:IsCancelled = $false
+        Add-Content -Path $script:LogPath -Value "$(Get-Date): Execution finished, Results: $($script:Results.Count)" -ErrorAction SilentlyContinue
     }
 })
 
@@ -411,14 +389,17 @@ function Reset-ScriptState {
         $script:RunspacePool = $null
     }
     $script:Jobs = New-Object 'System.Collections.Concurrent.ConcurrentBag[PSObject]'
-    $script:Results.Clear()
+    $script:Results = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
     $script:IsCancelled = $false
+    $script:CompletedCount = 0
+    $script:CsvPath = $null
     $progressBar.Value = 0
     $lblStatus.Text = ""
     $btnRun.Enabled = $true
     $btnCancel.Enabled = $false
     $script:OutputGrid.Rows.Clear()
     $script:OutputForm.Refresh()
+    Add-Content -Path $script:LogPath -Value "$(Get-Date): Script state reset" -ErrorAction SilentlyContinue
 }
 
 # Button click events
@@ -428,14 +409,18 @@ $btnRun.Add_Click({
     $computers = $txtComputers.Text -split '[;\r\n]' | Where-Object { $_ -ne "" }
     $commandText = $txtCommands.Text.Trim()
     
+    Add-Content -Path $script:LogPath -Value "$(Get-Date): btnRun clicked, Computers: $($computers.Count), Command: $commandText" -ErrorAction SilentlyContinue
+    
     if ($computers.Count -eq 0 -or [string]::IsNullOrWhiteSpace($commandText)) {
         [System.Windows.Forms.MessageBox]::Show("Please enter computer names and commands.", "Input Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        Add-Content -Path $script:LogPath -Value "$(Get-Date): Input validation failed" -ErrorAction SilentlyContinue
         return
     }
 
     $invalidComputers = $computers | Where-Object { $_ -match '[^\w\.-]' }
     if ($invalidComputers) {
         [System.Windows.Forms.MessageBox]::Show("Invalid computer names detected: $($invalidComputers -join ', ')", "Validation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        Add-Content -Path $script:LogPath -Value "$(Get-Date): Invalid computer names: $($invalidComputers -join ', ')" -ErrorAction SilentlyContinue
         return
     }
 
@@ -445,9 +430,28 @@ $btnRun.Add_Click({
         if (-not (Test-Path $remoteICMDir)) { New-Item -Path $remoteICMDir -ItemType Directory -Force | Out-Null }
         $txtComputers.Text | Out-File -FilePath "$remoteICMDir\lastLIST.txt" -Encoding UTF8 -ErrorAction Stop
         $txtCommands.Text | Out-File -FilePath "$remoteICMDir\lastPS.ps1" -Encoding UTF8 -ErrorAction Stop
+        Add-Content -Path $script:LogPath -Value "$(Get-Date): Saved last list and commands" -ErrorAction SilentlyContinue
     }
     catch {
         [System.Windows.Forms.MessageBox]::Show("Failed to save last list/commands: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        Add-Content -Path $script:LogPath -Value "$(Get-Date): Failed to save last list/commands: $_" -ErrorAction SilentlyContinue
+    }
+
+    # Initialize CSV file if saving is enabled
+    if ($chkSaveCsv.Checked) {
+        try {
+            $remoteICMDir = "$env:USERPROFILE\Desktop\RemoteICM"
+            $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+            $script:CsvPath = "$remoteICMDir\RemoteCommandResults_$timestamp.csv"
+            # Create an empty CSV with headers
+            [PSCustomObject]@{ ComputerName = ""; Status = ""; Timestamp = ""; Output = "" } | Export-Csv -Path $script:CsvPath -NoTypeInformation -ErrorAction Stop
+            Add-Content -Path $script:LogPath -Value "$(Get-Date): Initialized CSV at $script:CsvPath" -ErrorAction SilentlyContinue
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show("Failed to initialize CSV: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            Add-Content -Path $script:LogPath -Value "$(Get-Date): Failed to initialize CSV: $_" -ErrorAction SilentlyContinue
+            return
+        }
     }
 
     $progressBar.Maximum = $computers.Count
@@ -455,63 +459,88 @@ $btnRun.Add_Click({
     $btnCancel.Enabled = $true
     $script:OutputForm.Show()
     $script:OutputForm.Refresh()
+    $lblStatus.Text = "Starting execution..."
 
     # Initialize runspace pool
     if (-not $script:RunspacePool -or $script:RunspacePool.IsDisposed) {
         $script:RunspacePool = [RunspaceFactory]::CreateRunspacePool(1, $numConcurrent.Value)
         $script:RunspacePool.Open()
+        Add-Content -Path $script:LogPath -Value "$(Get-Date): Runspace pool opened with max concurrency $($numConcurrent.Value)" -ErrorAction SilentlyContinue
     }
-    $script:Jobs = New-Object 'System.Collections.Concurrent.ConcurrentBag[PSObject]'
-    $script:Results = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()  # Switch to ConcurrentBag for thread-safe adds
 
     # Define the script block for runspaces
     $scriptBlock = {
-        param($comp, $cmdText, $resultsBag)
+        param($comp, $cmdText)
+        $logPath = "$env:USERPROFILE\Desktop\RemoteICM\DebugLog.txt"
+        Add-Content -Path $logPath -Value "$(Get-Date): Starting job for $comp" -ErrorAction SilentlyContinue
         try {
             $scriptBlock = [ScriptBlock]::Create($cmdText)
-			# Timeout for runspace 45s
-            $output = Invoke-Command -ComputerName $comp -ScriptBlock $scriptBlock -ErrorAction Stop -SessionOption (New-PSSessionOption -OperationTimeout 45000)
-            $resultsBag.Add([PSCustomObject]@{
+            $output = Invoke-Command -ComputerName $comp -ScriptBlock $scriptBlock -ErrorAction Stop -SessionOption (New-PSSessionOption -OperationTimeout 30000)
+            $result = [PSCustomObject]@{
                 ComputerName = $comp
                 Output       = if ($output) { $output | Out-String } else { "" }
                 Status       = "Success"
                 Timestamp    = Get-Date
-            })
+            }
+            Add-Content -Path $logPath -Value "$(Get-Date): Job for $comp succeeded" -ErrorAction SilentlyContinue
+            return $result
         }
         catch {
-            $resultsBag.Add([PSCustomObject]@{
+            $result = [PSCustomObject]@{
                 ComputerName = $comp
                 Output       = $_.Exception.Message
                 Status       = if ($_.Exception -match "not online") { "Offline" } elseif ($_.Exception -match "timeout") { "Timeout" } else { "Error" }
                 Timestamp    = Get-Date
-            })
+            }
+            Add-Content -Path $logPath -Value "$(Get-Date): Job for $comp failed: $($_.Exception.Message)" -ErrorAction SilentlyContinue
+            return $result
         }
     }
 
-    # Start jobs
+    # Start all jobs asynchronously
     foreach ($computer in $computers) {
         $computer = $computer.Trim()
-        $powershell = [PowerShell]::Create().AddScript($scriptBlock).AddParameter("comp", $computer).AddParameter("cmdText", $commandText).AddParameter("resultsBag", $script:Results)
+        Add-Content -Path $script:LogPath -Value "$(Get-Date): Starting job for $computer" -ErrorAction SilentlyContinue
+        
+        $powershell = [PowerShell]::Create().AddScript($scriptBlock).AddParameter("comp", $computer).AddParameter("cmdText", $commandText)
         $powershell.RunspacePool = $script:RunspacePool
-        $script:Jobs.Add([PSCustomObject]@{
+        $handle = $powershell.BeginInvoke()
+        $job = [PSCustomObject]@{
             PowerShell = $powershell
-            Handle     = $powershell.BeginInvoke()
-        })
+            Handle     = $handle
+            Computer   = $computer
+        }
+        $script:Jobs.Add($job)
     }
 
+    # Start the timer to check job completion
     $script:UpdateTimer.Start()
+    Add-Content -Path $script:LogPath -Value "$(Get-Date): Started timer with $($computers.Count) jobs" -ErrorAction SilentlyContinue
+})
+
+$btnCancel.Add_Click({
+    $script:IsCancelled = $true
+    $lblStatus.Text = "Cancelling execution..."
+    Add-Content -Path $script:LogPath -Value "$(Get-Date): Cancel requested" -ErrorAction SilentlyContinue
 })
 
 # Clean up on form close
 $form.Add_FormClosing({
+    $script:IsCancelled = $true
     if ($script:UpdateTimer.Enabled) { $script:UpdateTimer.Stop() }
     if ($script:RunspacePool -and $script:RunspacePool.RunspacePoolStateInfo.State -eq 'Opened') {
         $script:RunspacePool.Close()
         $script:RunspacePool.Dispose()
     }
-    $script:UpdateTimer.Dispose()
     $script:OutputForm.Close()
+    Add-Content -Path $script:LogPath -Value "$(Get-Date): Form closing" -ErrorAction SilentlyContinue
 })
+
+# Initialize log file
+$remoteICMDir = "$env:USERPROFILE\Desktop\RemoteICM"
+if (-not (Test-Path $remoteICMDir)) { New-Item -Path $remoteICMDir -ItemType Directory -Force | Out-Null }
+if (Test-Path $script:LogPath) { Clear-Content -Path $script:LogPath }
+Add-Content -Path $script:LogPath -Value "$(Get-Date): Script initialized" -ErrorAction SilentlyContinue
 
 # Show the form
 $form.ShowDialog()
