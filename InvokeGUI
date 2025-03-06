@@ -220,7 +220,7 @@ $chkSaveCsv.Size = New-Object System.Drawing.Size(150,20)
 $chkSaveCsv.Anchor = 'Bottom,Left'
 $form.Controls.Add($chkSaveCsv)
 
-# Run button
+# Run and Cancel buttons
 $btnRun = New-Object System.Windows.Forms.Button
 $btnRun.Text = "Execute"
 $btnRun.Location = New-Object System.Drawing.Point(10,410)
@@ -228,9 +228,17 @@ $btnRun.Size = New-Object System.Drawing.Size(100,20)
 $btnRun.Anchor = 'Bottom,Left'
 $form.Controls.Add($btnRun)
 
+$btnCancel = New-Object System.Windows.Forms.Button
+$btnCancel.Text = "Cancel"
+$btnCancel.Location = New-Object System.Drawing.Point(120,410)
+$btnCancel.Size = New-Object System.Drawing.Size(100,20)
+$btnCancel.Anchor = 'Bottom,Left'
+$btnCancel.Enabled = $false
+$form.Controls.Add($btnCancel)
+
 # Status label
 $lblStatus = New-Object System.Windows.Forms.Label
-$lblStatus.Location = New-Object System.Drawing.Point(120,415)
+$lblStatus.Location = New-Object System.Drawing.Point(230,415)
 $lblStatus.Size = New-Object System.Drawing.Size(400,20)
 $lblStatus.Anchor = 'Bottom,Left'
 $form.Controls.Add($lblStatus)
@@ -240,7 +248,7 @@ $form.Add_Resize({
     $txtComputers.Width = $form.ClientSize.Width - 20
     $txtCommands.Width = $form.ClientSize.Width - 20
     $progressBar.Width = $form.ClientSize.Width - 20
-    $lblStatus.Width = $form.ClientSize.Width - 130
+    $lblStatus.Width = $form.ClientSize.Width - 240
 
     $btnClearComputers.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 62),10)
     $btnImportLastList.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 144),10)
@@ -249,7 +257,7 @@ $form.Add_Resize({
     $btnLoadCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 154), ($txtComputers.Bottom + 10))
     $btnGetWorkstationInfo.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 266), ($txtComputers.Bottom + 10))
     $btnImportLastPS.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 348), ($txtComputers.Bottom + 10))
-    $numThrottle.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 60), ($txtCommands.Bottom + 8))
+    $numThrottle.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 60), ($txtComputers.Bottom + 138))
 
     $bottomControlsHeight = 90
     $availableHeight = $form.ClientSize.Height - $bottomControlsHeight - 60
@@ -265,29 +273,36 @@ $form.Add_Resize({
         $progressBar.Location = New-Object System.Drawing.Point(10, ($form.ClientSize.Height - 70))
         $chkSaveCsv.Location = New-Object System.Drawing.Point(10, ($form.ClientSize.Height - 50))
         $btnRun.Location = New-Object System.Drawing.Point(10, ($form.ClientSize.Height - 30))
-        $lblStatus.Location = New-Object System.Drawing.Point(120, ($form.ClientSize.Height - 25))
+        $btnCancel.Location = New-Object System.Drawing.Point(120, ($form.ClientSize.Height - 30))
+        $lblStatus.Location = New-Object System.Drawing.Point(230, ($form.ClientSize.Height - 25))
     }
 })
 
 # Global variables
 $script:LogPath = "$env:USERPROFILE\Desktop\RemoteICM\DebugLog.txt"
 $script:CsvPath = $null
+$script:IsCancelled = $false
+$script:Job = $null
 
-# Button click event
+# Button click events
 $btnRun.Add_Click({
+    $script:IsCancelled = $false
     $lblStatus.Text = "Starting execution..."
     $btnRun.Enabled = $false
+    $btnCancel.Enabled = $true
+    $progressBar.Value = 0
     $form.Refresh()
 
     $computers = $txtComputers.Text -split '[;\r\n]' | Where-Object { $_ -ne "" }
     $commandText = $txtCommands.Text.Trim()
     
-    Add-Content -Path $script:LogPath -Value "$(Get-Date): btnRun clicked, Computers: $($computers.Count), Command: $commandText" -ErrorAction SilentlyContinue
+    Add-Content -Path $script:LogPath -Value "$(Get-Date): btnRun clicked, Computers: $($computers.Count), Command: $commandText, Throttle: $($numThrottle.Value)" -ErrorAction SilentlyContinue
     
     if ($computers.Count -eq 0 -or [string]::IsNullOrWhiteSpace($commandText)) {
         [System.Windows.Forms.MessageBox]::Show("Please enter computer names and commands.", "Input Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
         Add-Content -Path $script:LogPath -Value "$(Get-Date): Input validation failed" -ErrorAction SilentlyContinue
         $btnRun.Enabled = $true
+        $btnCancel.Enabled = $false
         $lblStatus.Text = ""
         return
     }
@@ -297,6 +312,7 @@ $btnRun.Add_Click({
         [System.Windows.Forms.MessageBox]::Show("Invalid computer names detected: $($invalidComputers -join ', ')", "Validation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
         Add-Content -Path $script:LogPath -Value "$(Get-Date): Invalid computer names: $($invalidComputers -join ', ')" -ErrorAction SilentlyContinue
         $btnRun.Enabled = $true
+        $btnCancel.Enabled = $false
         $lblStatus.Text = ""
         return
     }
@@ -327,21 +343,41 @@ $btnRun.Add_Click({
             [System.Windows.Forms.MessageBox]::Show("Failed to initialize CSV: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
             Add-Content -Path $script:LogPath -Value "$(Get-Date): Failed to initialize CSV: $_" -ErrorAction SilentlyContinue
             $btnRun.Enabled = $true
+            $btnCancel.Enabled = $false
             $lblStatus.Text = ""
             return
         }
     }
 
-    # Execute commands with progress
+    # Execute commands asynchronously
     $results = [System.Collections.ArrayList]::new()
     $scriptBlock = [ScriptBlock]::Create($commandText)
     $progressBar.Maximum = $computers.Count
-    $progressBar.Value = 0
     $processedCount = 0
 
-    try {
-        $output = Invoke-Command -ComputerName $computers -ScriptBlock $scriptBlock -ThrottleLimit $numThrottle.Value -ErrorAction Stop -SessionOption (New-PSSessionOption -OperationTimeout 30000)
-        foreach ($item in $output) {
+    # Start job
+    $script:Job = Invoke-Command -ComputerName $computers -ScriptBlock $scriptBlock -ThrottleLimit $numThrottle.Value -AsJob -SessionOption (New-PSSessionOption -OperationTimeout 30000)
+    Add-Content -Path $script:LogPath -Value "$(Get-Date): Started job $($script:Job.Id)" -ErrorAction SilentlyContinue
+
+    # Poll job status
+    while ($script:Job.State -eq "Running" -and -not $script:IsCancelled) {
+        $completedComputers = $script:Job.ChildJobs | Where-Object { $_.State -ne "Running" }
+        $processedCount = $completedComputers.Count
+        $progressBar.Value = $processedCount
+        $lblStatus.Text = "Processing... ($processedCount of $($computers.Count))"
+        $form.Refresh()
+        Start-Sleep -Milliseconds 500  # Poll every 0.5 seconds
+    }
+
+    if ($script:IsCancelled) {
+        $script:Job | Stop-Job -PassThru | Remove-Job -Force
+        $lblStatus.Text = "Execution cancelled"
+        Add-Content -Path $script:LogPath -Value "$(Get-Date): Job cancelled" -ErrorAction SilentlyContinue
+    } else {
+        # Collect results
+        $jobResults = $script:Job | Receive-Job -Wait -ErrorAction SilentlyContinue -ErrorVariable jobErrors
+        $script:Job | Remove-Job
+        foreach ($item in $jobResults) {
             $computer = $item.PSComputerName
             $result = [PSCustomObject]@{
                 ComputerName = $computer
@@ -354,30 +390,45 @@ $btnRun.Add_Click({
             if ($chkSaveCsv.Checked -and $script:CsvPath) {
                 $result | Export-Csv -Path $script:CsvPath -NoTypeInformation -Append -ErrorAction SilentlyContinue
             }
-            $processedCount++
-            $progressBar.Value = $processedCount
-            $lblStatus.Text = "Processing... ($processedCount of $($computers.Count))"
-            $form.Refresh()
         }
-    }
-    catch {
+
+        # Handle errors per computer
+        foreach ($error in $jobErrors) {
+            $computer = $error.TargetObject
+            if ($computers -contains $computer -and -not ($results | Where-Object { $_.ComputerName -eq $computer })) {
+                $result = [PSCustomObject]@{
+                    ComputerName = $computer
+                    Output       = $error.Exception.Message
+                    Status       = if ($error.Exception -match "not online") { "Offline" } elseif ($error.Exception -match "timeout") { "Timeout" } else { "Error" }
+                    Timestamp    = Get-Date
+                }
+                Add-Content -Path $script:LogPath -Value "$(Get-Date): Job for $computer failed: $($error.Exception.Message)" -ErrorAction SilentlyContinue
+                $null = $results.Add($result)
+                if ($chkSaveCsv.Checked -and $script:CsvPath) {
+                    $result | Export-Csv -Path $script:CsvPath -NoTypeInformation -Append -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        # Ensure all computers are accounted for
         foreach ($computer in $computers) {
-            $result = [PSCustomObject]@{
-                ComputerName = $computer
-                Output       = $_.Exception.Message
-                Status       = if ($_.Exception -match "not online") { "Offline" } elseif ($_.Exception -match "timeout") { "Timeout" } else { "Error" }
-                Timestamp    = Get-Date
+            if (-not ($results | Where-Object { $_.ComputerName -eq $computer })) {
+                $result = [PSCustomObject]@{
+                    ComputerName = $computer
+                    Output       = "No response received"
+                    Status       = "Error"
+                    Timestamp    = Get-Date
+                }
+                Add-Content -Path $script:LogPath -Value "$(Get-Date): Job for $computer failed: No response received" -ErrorAction SilentlyContinue
+                $null = $results.Add($result)
+                if ($chkSaveCsv.Checked -and $script:CsvPath) {
+                    $result | Export-Csv -Path $script:CsvPath -NoTypeInformation -Append -ErrorAction SilentlyContinue
+                }
             }
-            Add-Content -Path $script:LogPath -Value "$(Get-Date): Job for $computer failed: $($_.Exception.Message)" -ErrorAction SilentlyContinue
-            $null = $results.Add($result)
-            if ($chkSaveCsv.Checked -and $script:CsvPath) {
-                $result | Export-Csv -Path $script:CsvPath -NoTypeInformation -Append -ErrorAction SilentlyContinue
-            }
-            $processedCount++
-            $progressBar.Value = $processedCount
-            $lblStatus.Text = "Processing... ($processedCount of $($computers.Count))"
-            $form.Refresh()
         }
+
+        $progressBar.Value = $computers.Count
+        $lblStatus.Text = if ($chkSaveCsv.Checked -and $script:CsvPath) { "Completed - Results saved to: $script:CsvPath" } else { "Completed" }
     }
 
     # Display results
@@ -388,9 +439,27 @@ $btnRun.Add_Click({
         Add-Content -Path $script:LogPath -Value "$(Get-Date): No results to display in Out-GridView" -ErrorAction SilentlyContinue
     }
 
-    $lblStatus.Text = if ($chkSaveCsv.Checked -and $script:CsvPath) { "Completed - Results saved to: $script:CsvPath" } else { "Completed" }
+    # Cleanup sessions
+    Get-PSSession | Remove-PSSession -ErrorAction SilentlyContinue
     $btnRun.Enabled = $true
+    $btnCancel.Enabled = $false
     Add-Content -Path $script:LogPath -Value "$(Get-Date): Execution finished, Results: $($results.Count)" -ErrorAction SilentlyContinue
+})
+
+$btnCancel.Add_Click({
+    $script:IsCancelled = $true
+    $lblStatus.Text = "Cancelling execution..."
+    Add-Content -Path $script:LogPath -Value "$(Get-Date): Cancel requested" -ErrorAction SilentlyContinue
+})
+
+# Clean up on form close
+$form.Add_FormClosing({
+    $script:IsCancelled = $true
+    if ($script:Job -and $script:Job.State -eq "Running") {
+        $script:Job | Stop-Job -PassThru | Remove-Job -Force
+    }
+    Get-PSSession | Remove-PSSession -ErrorAction SilentlyContinue
+    Add-Content -Path $script:LogPath -Value "$(Get-Date): Form closing" -ErrorAction SilentlyContinue
 })
 
 # Initialize log file
