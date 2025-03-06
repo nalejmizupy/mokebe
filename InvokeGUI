@@ -321,7 +321,7 @@ $script:CsvPath = $null
 $script:UpdateTimer = New-Object System.Windows.Forms.Timer
 
 # Timer setup for non-blocking execution
-$script:UpdateTimer.Interval = 500  # Check every 0.5 seconds
+$script:UpdateTimer.Interval = 2000  # Check every 2 seconds
 $script:UpdateTimer.Add_Tick({
     if ($script:Jobs.Count -gt 0 -and -not $script:IsCancelled) {
         $completedJobs = $script:Jobs | Where-Object { $_.Handle.IsCompleted }
