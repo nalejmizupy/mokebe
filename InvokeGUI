@@ -318,29 +318,30 @@ $script:UpdateTimer = New-Object System.Windows.Forms.Timer
 $script:IsCancelled = $false
 
 # Timer setup
-$script:UpdateTimer.Interval = 2000
+$script:UpdateTimer.Interval = 500  # Update every 0.5 seconds for smoother feedback
 $script:UpdateTimer.Add_Tick({
     try {
         if ($script:Jobs.Count -gt 0 -and -not $script:IsCancelled) {
-            $completedJobs = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
-            $script:Jobs | Where-Object { $_.Handle.IsCompleted } | ForEach-Object { $completedJobs.Add($_) }
-            if ($completedJobs.Count -gt 0) {
+            $completedJobs = $script:Jobs | Where-Object { $_.Handle.IsCompleted }
+            if ($completedJobs) {
                 foreach ($job in $completedJobs) {
                     $null = $script:Jobs.TryTake([ref]$job)
-                    $job.PowerShell.EndInvoke($job.Handle)
+                    $job.PowerShell.EndInvoke($job.Handle)  # Ensure job completion is processed
                     $job.PowerShell.Dispose()
-                    $progressBar.Value++
+                    $progressBar.Value = [Math]::Min($progressBar.Value + 1, $progressBar.Maximum)
                 }
 
-                $currentCount = $script:OutputGrid.Rows.Count
-                $newResults = $script:Results | Select-Object -Skip $currentCount
-                foreach ($result in $newResults) {
-                    $script:OutputGrid.Rows.Add($result.ComputerName, $result.Status, $result.Timestamp, $result.Output) | Out-Null
+                # Update DataGridView with all results so far
+                $currentResults = $script:Results.ToArray()
+                $newRows = $currentResults | Where-Object { -not ($script:OutputGrid.Rows | Where-Object { $_.Cells[0].Value -eq $_.ComputerName }) }
+                foreach ($result in $newRows) {
+                    $form.Invoke([Action]{ 
+                        $script:OutputGrid.Rows.Add($result.ComputerName, $result.Status, $result.Timestamp, $result.Output) | Out-Null
+                        $script:OutputGrid.FirstDisplayedScrollingRowIndex = [Math]::Max(0, $script:OutputGrid.RowCount - 1)
+                    })
                 }
-                if ($newResults) { 
-                    $script:OutputGrid.FirstDisplayedScrollingRowIndex = $script:OutputGrid.RowCount - 1
-                    $script:OutputForm.Refresh()
-                }
+                $script:OutputForm.Refresh()
+                $lblStatus.Text = "Processing... ($($progressBar.Value) of $($progressBar.Maximum))"
             }
         }
 
@@ -351,6 +352,15 @@ $script:UpdateTimer.Add_Tick({
                 $script:RunspacePool.Dispose()
                 $script:RunspacePool = $null
             }
+
+            # Final UI update
+            $form.Invoke([Action]{ 
+                $script:OutputGrid.Rows.Clear()
+                foreach ($result in $script:Results) {
+                    $script:OutputGrid.Rows.Add($result.ComputerName, $result.Status, $result.Timestamp, $result.Output) | Out-Null
+                }
+                $script:OutputGrid.FirstDisplayedScrollingRowIndex = [Math]::Max(0, $script:OutputGrid.RowCount - 1)
+            })
 
             if ($chkSaveCsv.Checked -and $script:Results.Count -gt 0 -and -not $script:IsCancelled) {
                 try {
@@ -363,7 +373,6 @@ $script:UpdateTimer.Add_Tick({
                 }
                 catch {
                     $lblStatus.Text = "Failed to save CSV: $_"
-                    Add-Content -Path "$env:USERPROFILE\Desktop\RemoteICM\RemoteCommandErrors.log" -Value "$(Get-Date): Failed to save CSV: $_"
                 }
             }
             elseif ($script:IsCancelled) {
@@ -379,7 +388,6 @@ $script:UpdateTimer.Add_Tick({
     }
     catch {
         $lblStatus.Text = "Error during execution: $_"
-        Add-Content -Path "$env:USERPROFILE\Desktop\RemoteICM\RemoteCommandErrors.log" -Value "$(Get-Date): Error during execution: $_"
         $script:UpdateTimer.Stop()
         if ($script:RunspacePool) { 
             $script:RunspacePool.Close()
@@ -418,7 +426,6 @@ $btnRun.Add_Click({
     Reset-ScriptState
 
     $computers = $txtComputers.Text -split '[;\r\n]' | Where-Object { $_ -ne "" }
-    # Preserve the entire command text as a single script block instead of splitting
     $commandText = $txtCommands.Text.Trim()
     
     if ($computers.Count -eq 0 -or [string]::IsNullOrWhiteSpace($commandText)) {
@@ -449,61 +456,50 @@ $btnRun.Add_Click({
     $script:OutputForm.Show()
     $script:OutputForm.Refresh()
 
+    # Initialize runspace pool
     if (-not $script:RunspacePool -or $script:RunspacePool.IsDisposed) {
         $script:RunspacePool = [RunspaceFactory]::CreateRunspacePool(1, $numConcurrent.Value)
         $script:RunspacePool.Open()
     }
     $script:Jobs = New-Object 'System.Collections.Concurrent.ConcurrentBag[PSObject]'
-    $script:Results = New-Object 'System.Collections.Generic.List[PSObject]'
+    $script:Results = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()  # Switch to ConcurrentBag for thread-safe adds
 
+    # Define the script block for runspaces
+    $scriptBlock = {
+        param($comp, $cmdText, $resultsBag)
+        try {
+            $scriptBlock = [ScriptBlock]::Create($cmdText)
+			# Timeout for runspace 45s
+            $output = Invoke-Command -ComputerName $comp -ScriptBlock $scriptBlock -ErrorAction Stop -SessionOption (New-PSSessionOption -OperationTimeout 45000)
+            $resultsBag.Add([PSCustomObject]@{
+                ComputerName = $comp
+                Output       = if ($output) { $output | Out-String } else { "" }
+                Status       = "Success"
+                Timestamp    = Get-Date
+            })
+        }
+        catch {
+            $resultsBag.Add([PSCustomObject]@{
+                ComputerName = $comp
+                Output       = $_.Exception.Message
+                Status       = if ($_.Exception -match "not online") { "Offline" } elseif ($_.Exception -match "timeout") { "Timeout" } else { "Error" }
+                Timestamp    = Get-Date
+            })
+        }
+    }
+
+    # Start jobs
     foreach ($computer in $computers) {
         $computer = $computer.Trim()
-        $powershell = [PowerShell]::Create().AddScript({
-            param($comp, $cmdText, $resultsList)
-            try {
-                # Create a script block from the entire command text
-                $scriptBlock = [ScriptBlock]::Create($cmdText)
-									 
-												 
-																		  
-														 
-																					  
-						 
-					 
-									  
-                $output = Invoke-Command -ComputerName $comp -ScriptBlock $scriptBlock -ErrorAction Stop -SessionOption (New-PSSessionOption -OperationTimeout 30000)
-                
-                $resultsList.Add([PSCustomObject]@{
-                    ComputerName = $comp
-                    Output = if ($output) { $output | Out-String } else { "" }
-                    Status = "Success"
-                    Timestamp = Get-Date
-                })
-				 
-            }
-            catch {
-                $resultsList.Add([PSCustomObject]@{
-                    ComputerName = $comp
-                    Output = $_.Exception.Message
-                    Status = if ($_.Exception -match "not online") { "Offline" } elseif ($_.Exception -match "timeout") { "Timeout" } else { "Error" }
-                    Timestamp = Get-Date
-                })
-            }
-        }).AddParameter("comp", $computer).AddParameter("cmdText", $commandText).AddParameter("resultsList", $script:Results)
-        
+        $powershell = [PowerShell]::Create().AddScript($scriptBlock).AddParameter("comp", $computer).AddParameter("cmdText", $commandText).AddParameter("resultsBag", $script:Results)
         $powershell.RunspacePool = $script:RunspacePool
         $script:Jobs.Add([PSCustomObject]@{
             PowerShell = $powershell
-            Handle = $powershell.BeginInvoke()
+            Handle     = $powershell.BeginInvoke()
         })
     }
 
     $script:UpdateTimer.Start()
-})
-
-$btnCancel.Add_Click({
-    $script:IsCancelled = $true
-    $lblStatus.Text = "Cancelling execution..."
 })
 
 # Clean up on form close
