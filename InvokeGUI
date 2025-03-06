@@ -316,50 +316,94 @@ $script:Results = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
 $script:RunspacePool = $null
 $script:IsCancelled = $false
 $script:CompletedCount = 0
+$script:TotalJobs = 0
 $script:LogPath = "$env:USERPROFILE\Desktop\RemoteICM\DebugLog.txt"
 $script:CsvPath = $null
 $script:UpdateTimer = New-Object System.Windows.Forms.Timer
+$script:LastGridUpdate = [DateTime]::MinValue  # Track last DataGridView update
+$script:PendingResults = [System.Collections.ArrayList]::new()  # Buffer for results
 
 # Timer setup for non-blocking execution
-$script:UpdateTimer.Interval = 2000  # Check every 2 seconds
+$script:UpdateTimer.Interval = 1000  # Check every 1 second
 $script:UpdateTimer.Add_Tick({
     if ($script:Jobs.Count -gt 0 -and -not $script:IsCancelled) {
         $completedJobs = $script:Jobs | Where-Object { $_.Handle.IsCompleted }
         foreach ($job in $completedJobs) {
             $null = $script:Jobs.TryTake([ref]$job)
-            $result = $job.PowerShell.EndInvoke($job.Handle)
-            $job.PowerShell.Dispose()
-            $script:CompletedCount++
-            Add-Content -Path $script:LogPath -Value "$(Get-Date): Job for $($job.Computer) completed, Count: $script:CompletedCount" -ErrorAction SilentlyContinue
-            
-            if ($result) {
-                $script:Results.Add($result)
-                $form.Invoke([Action]{
-                    $script:OutputGrid.Rows.Add($result.ComputerName, $result.Status, $result.Timestamp, $result.Output) | Out-Null
-                    if ($script:OutputGrid.RowCount -gt 0) {
-                        $script:OutputGrid.FirstDisplayedScrollingRowIndex = [Math]::Max(0, $script:OutputGrid.RowCount - 1)
-                    }
-                    if (($script:CompletedCount % 5) -eq 0 -or $script:CompletedCount -eq $progressBar.Maximum) {
-                        $progressBar.Value = [Math]::Min($script:CompletedCount, $progressBar.Maximum)
-                        $lblStatus.Text = "Processing... ($script:CompletedCount of $($progressBar.Maximum))"
-                    }
-                })
-
-                # Save to CSV incrementally
-                if ($chkSaveCsv.Checked -and $script:CsvPath) {
-                    try {
-                        $result | Export-Csv -Path $script:CsvPath -NoTypeInformation -Append -ErrorAction Stop
-                        Add-Content -Path $script:LogPath -Value "$(Get-Date): Appended result for $($result.ComputerName) to CSV" -ErrorAction SilentlyContinue
-                    }
-                    catch {
-                        Add-Content -Path $script:LogPath -Value "$(Get-Date): Failed to append to CSV: $_" -ErrorAction SilentlyContinue
+            try {
+                $result = $job.PowerShell.EndInvoke($job.Handle)
+                $script:CompletedCount++
+                Add-Content -Path $script:LogPath -Value "$(Get-Date): Job for $($job.Computer) completed, Count: $script:CompletedCount" -ErrorAction SilentlyContinue
+                
+                if ($result) {
+                    $script:Results.Add($result)
+                    $script:PendingResults.Add($result) | Out-Null  # Buffer result
+                    if ($chkSaveCsv.Checked -and $script:CsvPath) {
+                        try {
+                            $result | Export-Csv -Path $script:CsvPath -NoTypeInformation -Append -ErrorAction Stop
+                            Add-Content -Path $script:LogPath -Value "$(Get-Date): Appended result for $($result.ComputerName) to CSV" -ErrorAction SilentlyContinue
+                        }
+                        catch {
+                            Add-Content -Path $script:LogPath -Value "$(Get-Date): Failed to append to CSV: $_" -ErrorAction SilentlyContinue
+                        }
                     }
                 }
             }
+            catch {
+                $script:CompletedCount++
+                $result = [PSCustomObject]@{
+                    ComputerName = $job.Computer
+                    Output       = $_.Exception.Message
+                    Status       = "Error"
+                    Timestamp    = Get-Date
+                }
+                $script:Results.Add($result)
+                $script:PendingResults.Add($result) | Out-Null  # Buffer error result
+                Add-Content -Path $script:LogPath -Value "$(Get-Date): Error ending job for $($job.Computer): $_" -ErrorAction SilentlyContinue
+            }
+            finally {
+                $job.PowerShell.Dispose()
+            }
+        }
+
+        # Update progress bar and status every tick
+        $form.Invoke([Action]{
+            $progressBar.Value = [Math]::Min($script:CompletedCount, $progressBar.Maximum)
+            $lblStatus.Text = "Processing... ($script:CompletedCount of $($progressBar.Maximum))"
+        })
+
+        # Update DataGridView every 5 seconds
+        $now = [DateTime]::Now
+        if (($now - $script:LastGridUpdate).TotalSeconds -ge 5 -and $script:PendingResults.Count -gt 0) {
+            $form.Invoke([Action]{
+                foreach ($result in $script:PendingResults) {
+                    $script:OutputGrid.Rows.Add($result.ComputerName, $result.Status, $result.Timestamp, $result.Output) | Out-Null
+                }
+                if ($script:OutputGrid.RowCount -gt 0) {
+                    $script:OutputGrid.FirstDisplayedScrollingRowIndex = [Math]::Max(0, $script:OutputGrid.RowCount - 1)
+                }
+                $script:PendingResults.Clear()  # Clear buffer after update
+            })
+            $script:LastGridUpdate = $now
+            Add-Content -Path $script:LogPath -Value "$(Get-Date): Updated DataGridView with $($script:OutputGrid.RowCount) rows" -ErrorAction SilentlyContinue
         }
     }
 
-    if ($script:Jobs.Count -eq 0 -or $script:IsCancelled) {
+    if ($script:CompletedCount -ge $script:TotalJobs -or $script:IsCancelled) {
+        # Final DataGridView update before stopping
+        if ($script:PendingResults.Count -gt 0) {
+            $form.Invoke([Action]{
+                foreach ($result in $script:PendingResults) {
+                    $script:OutputGrid.Rows.Add($result.ComputerName, $result.Status, $result.Timestamp, $result.Output) | Out-Null
+                }
+                if ($script:OutputGrid.RowCount -gt 0) {
+                    $script:OutputGrid.FirstDisplayedScrollingRowIndex = [Math]::Max(0, $script:OutputGrid.RowCount - 1)
+                }
+                $script:PendingResults.Clear()
+            })
+            Add-Content -Path $script:LogPath -Value "$(Get-Date): Final DataGridView update with $($script:OutputGrid.RowCount) rows" -ErrorAction SilentlyContinue
+        }
+
         $script:UpdateTimer.Stop()
         $form.Invoke([Action]{
             if ($script:IsCancelled) {
@@ -390,9 +434,12 @@ function Reset-ScriptState {
     }
     $script:Jobs = New-Object 'System.Collections.Concurrent.ConcurrentBag[PSObject]'
     $script:Results = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
+    $script:PendingResults = [System.Collections.ArrayList]::new()
     $script:IsCancelled = $false
     $script:CompletedCount = 0
+    $script:TotalJobs = 0
     $script:CsvPath = $null
+    $script:LastGridUpdate = [DateTime]::MinValue
     $progressBar.Value = 0
     $lblStatus.Text = ""
     $btnRun.Enabled = $true
@@ -443,7 +490,6 @@ $btnRun.Add_Click({
             $remoteICMDir = "$env:USERPROFILE\Desktop\RemoteICM"
             $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
             $script:CsvPath = "$remoteICMDir\RemoteCommandResults_$timestamp.csv"
-            # Create an empty CSV with headers
             [PSCustomObject]@{ ComputerName = ""; Status = ""; Timestamp = ""; Output = "" } | Export-Csv -Path $script:CsvPath -NoTypeInformation -ErrorAction Stop
             Add-Content -Path $script:LogPath -Value "$(Get-Date): Initialized CSV at $script:CsvPath" -ErrorAction SilentlyContinue
         }
@@ -455,6 +501,7 @@ $btnRun.Add_Click({
     }
 
     $progressBar.Maximum = $computers.Count
+    $script:TotalJobs = $computers.Count
     $btnRun.Enabled = $false
     $btnCancel.Enabled = $true
     $script:OutputForm.Show()
@@ -478,11 +525,11 @@ $btnRun.Add_Click({
             $output = Invoke-Command -ComputerName $comp -ScriptBlock $scriptBlock -ErrorAction Stop -SessionOption (New-PSSessionOption -OperationTimeout 30000)
             $result = [PSCustomObject]@{
                 ComputerName = $comp
-                Output       = if ($output) { $output | Out-String } else { "" }
+                Output       = if ($output) { $output | Out-String } else { "No output" }
                 Status       = "Success"
                 Timestamp    = Get-Date
             }
-            Add-Content -Path $logPath -Value "$(Get-Date): Job for $comp succeeded" -ErrorAction SilentlyContinue
+            Add-Content -Path $script:LogPath -Value "$(Get-Date): Job for $comp succeeded, Output: $($result.Output)" -ErrorAction SilentlyContinue
             return $result
         }
         catch {
@@ -492,7 +539,7 @@ $btnRun.Add_Click({
                 Status       = if ($_.Exception -match "not online") { "Offline" } elseif ($_.Exception -match "timeout") { "Timeout" } else { "Error" }
                 Timestamp    = Get-Date
             }
-            Add-Content -Path $logPath -Value "$(Get-Date): Job for $comp failed: $($_.Exception.Message)" -ErrorAction SilentlyContinue
+            Add-Content -Path $script:LogPath -Value "$(Get-Date): Job for $comp failed: $($_.Exception.Message)" -ErrorAction SilentlyContinue
             return $result
         }
     }
@@ -500,10 +547,11 @@ $btnRun.Add_Click({
     # Start all jobs asynchronously
     foreach ($computer in $computers) {
         $computer = $computer.Trim()
-        Add-Content -Path $script:LogPath -Value "$(Get-Date): Starting job for $computer" -ErrorAction SilentlyContinue
+        Add-Content -Path $script:LogPath -Value "$(Get-Date): Queuing job for $computer" -ErrorAction SilentlyContinue
         
-        $powershell = [PowerShell]::Create().AddScript($scriptBlock).AddParameter("comp", $computer).AddParameter("cmdText", $commandText)
+        $powershell = [PowerShell]::Create()
         $powershell.RunspacePool = $script:RunspacePool
+        $powershell.AddScript($scriptBlock).AddParameter("comp", $computer).AddParameter("cmdText", $commandText) | Out-Null
         $handle = $powershell.BeginInvoke()
         $job = [PSCustomObject]@{
             PowerShell = $powershell
@@ -514,6 +562,7 @@ $btnRun.Add_Click({
     }
 
     # Start the timer to check job completion
+    $script:LastGridUpdate = [DateTime]::Now  # Initialize last update time
     $script:UpdateTimer.Start()
     Add-Content -Path $script:LogPath -Value "$(Get-Date): Started timer with $($computers.Count) jobs" -ErrorAction SilentlyContinue
 })
