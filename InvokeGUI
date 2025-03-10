@@ -1,7 +1,6 @@
 Add-Type -AssemblyName System.Windows.Forms
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-# P/Invoke to hide console
 Add-Type @"
     using System;
     using System.Runtime.InteropServices;
@@ -19,17 +18,14 @@ function Hide-Console {
     }
 }
 
-# Comment out the call to Hide-Console
 #Hide-Console
 
-# Create main form
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Remote Command Executor"
 $form.Size = New-Object System.Drawing.Size(600,500)
 $form.StartPosition = "CenterScreen"
 $form.MinimumSize = New-Object System.Drawing.Size(400,400)
 
-# Computer names controls
 $lblComputers = New-Object System.Windows.Forms.Label
 $lblComputers.Text = "Computer Names (separate by ; or new line):"
 $lblComputers.Location = New-Object System.Drawing.Point(10,10)
@@ -97,14 +93,12 @@ $txtComputers.Anchor = 'Top,Left,Right'
 $txtComputers.ScrollBars = 'Vertical'
 $form.Controls.Add($txtComputers)
 
-# Commands controls
 $lblCommands = New-Object System.Windows.Forms.Label
 $lblCommands.Text = "Commands to Execute:"
 $lblCommands.Location = New-Object System.Drawing.Point(10,190)
 $lblCommands.AutoSize = $true
 $form.Controls.Add($lblCommands)
 
-# Button: GetMSI
 $btnGetMSI = New-Object System.Windows.Forms.Button
 $btnGetMSI.Text = "GetMSI"
 $btnGetMSI.Size = New-Object System.Drawing.Size(60,20)
@@ -125,7 +119,6 @@ $btnGetMSI.Add_Click({
 })
 $form.Controls.Add($btnGetMSI)
 
-# Button: GetWorkstationInfo
 $btnGetWorkstationInfo = New-Object System.Windows.Forms.Button
 $btnGetWorkstationInfo.Text = "GetWorkstationInfo"
 $btnGetWorkstationInfo.Size = New-Object System.Drawing.Size(110,20)
@@ -146,7 +139,6 @@ $btnGetWorkstationInfo.Add_Click({
 })
 $form.Controls.Add($btnGetWorkstationInfo)
 
-# Button: Load from File
 $btnLoadFromFile = New-Object System.Windows.Forms.Button
 $btnLoadFromFile.Text = "Load from File"
 $btnLoadFromFile.Size = New-Object System.Drawing.Size(90,20)
@@ -167,7 +159,6 @@ $btnLoadFromFile.Add_Click({
 })
 $form.Controls.Add($btnLoadFromFile)
 
-# Button: Import Last Command
 $btnImportLastCommand = New-Object System.Windows.Forms.Button
 $btnImportLastCommand.Text = "Import Last"
 $btnImportLastCommand.Size = New-Object System.Drawing.Size(80,20)
@@ -188,7 +179,6 @@ $btnImportLastCommand.Add_Click({
 })
 $form.Controls.Add($btnImportLastCommand)
 
-# Button: Clear Commands
 $btnClearCommands = New-Object System.Windows.Forms.Button
 $btnClearCommands.Text = "Clear"
 $btnClearCommands.Size = New-Object System.Drawing.Size(60,20)
@@ -205,7 +195,6 @@ $txtCommands.Anchor = 'Top,Left,Right'
 $txtCommands.ScrollBars = 'Vertical'
 $form.Controls.Add($txtCommands)
 
-# Throttle limit control
 $lblThrottle = New-Object System.Windows.Forms.Label
 $lblThrottle.Text = "Throttle Limit:"
 $lblThrottle.Location = New-Object System.Drawing.Point(10,320)
@@ -222,14 +211,12 @@ $numThrottle.Location = New-Object System.Drawing.Point(($form.ClientSize.Width 
 $numThrottle.Anchor = 'Bottom,Right'
 $form.Controls.Add($numThrottle)
 
-# Progress bar
 $progressBar = New-Object System.Windows.Forms.ProgressBar
 $progressBar.Location = New-Object System.Drawing.Point(10,350)
 $progressBar.Size = New-Object System.Drawing.Size(560,20)
 $progressBar.Anchor = 'Bottom,Left,Right'
 $form.Controls.Add($progressBar)
 
-# Save to CSV checkbox
 $chkSaveCsv = New-Object System.Windows.Forms.CheckBox
 $chkSaveCsv.Text = "Save Results to CSV File"
 $chkSaveCsv.Location = New-Object System.Drawing.Point(10,380)
@@ -237,7 +224,6 @@ $chkSaveCsv.Size = New-Object System.Drawing.Size(150,20)
 $chkSaveCsv.Anchor = 'Bottom,Left'
 $form.Controls.Add($chkSaveCsv)
 
-# Run and Cancel buttons
 $btnRun = New-Object System.Windows.Forms.Button
 $btnRun.Text = "Execute"
 $btnRun.Location = New-Object System.Drawing.Point(10,410)
@@ -253,14 +239,12 @@ $btnCancel.Anchor = 'Bottom,Left'
 $btnCancel.Enabled = $false
 $form.Controls.Add($btnCancel)
 
-# Status label
 $lblStatus = New-Object System.Windows.Forms.Label
 $lblStatus.Location = New-Object System.Drawing.Point(230,415)
 $lblStatus.Size = New-Object System.Drawing.Size(400,20)
 $lblStatus.Anchor = 'Bottom,Left'
 $form.Controls.Add($lblStatus)
 
-# Global variables
 $script:LogPath = "$env:USERPROFILE\Desktop\RemoteICM\DebugLog.txt"
 $script:CsvPath = $null
 $script:IsCancelled = $false
@@ -270,12 +254,11 @@ $script:DataGridView = $null
 $script:ResultsList = [System.Collections.ArrayList]::new()
 $script:Timer = $null
 
-# Function to create and update results window with scrollbars
 function Show-ResultsWindow {
     if (-not $script:ResultsWindow -or $script:ResultsWindow.IsDisposed) {
         $script:ResultsWindow = New-Object System.Windows.Forms.Form
         $script:ResultsWindow.Text = "Command Execution Results"
-        $script:ResultsWindow.Size = New-Object System.Drawing.Size(1000,600)
+        $script:ResultsWindow.Size = New-Object System.Drawing.Size(800,600)
         $script:ResultsWindow.StartPosition = "CenterScreen"
         
         $script:DataGridView = New-Object System.Windows.Forms.DataGridView
@@ -308,7 +291,7 @@ function Show-ResultsWindow {
         $colOutput = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
         $colOutput.Name = "Output"
         $colOutput.HeaderText = "Output"
-        $colOutput.Width = 500
+        $colOutput.Width = 400
         $colOutput.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::True
         $script:DataGridView.Columns.Add($colOutput) | Out-Null
         
@@ -330,7 +313,6 @@ function Update-DataGridView {
     }
 }
 
-# Modified btnRun click event
 $btnRun.Add_Click({
     $script:IsCancelled = $false
     $lblStatus.Text = "Starting execution..."
@@ -351,7 +333,6 @@ $btnRun.Add_Click({
         return
     }
 
-    # Save last computer list and commands
     try {
         $remoteICMDir = "$env:USERPROFILE\Desktop\RemoteICM"
         if (-not (Test-Path $remoteICMDir)) { New-Item -Path $remoteICMDir -ItemType Directory -Force | Out-Null }
@@ -362,13 +343,12 @@ $btnRun.Add_Click({
         [System.Windows.Forms.MessageBox]::Show("Failed to save last list/commands: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 
-    # Initialize CSV file without duplicating header
     if ($chkSaveCsv.Checked) {
         try {
             $remoteICMDir = "$env:USERPROFILE\Desktop\RemoteICM"
             $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
             $script:CsvPath = "$remoteICMDir\RemoteCommandResults_$timestamp.csv"
-            @() | Export-Csv -Path $script:CsvPath -NoTypeInformation -ErrorAction Stop
+            "ComputerName,Status,Timestamp,Output" | Out-File -FilePath $script:CsvPath -Encoding UTF8 -ErrorAction Stop
         }
         catch {
             [System.Windows.Forms.MessageBox]::Show("Failed to initialize CSV: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
@@ -379,20 +359,17 @@ $btnRun.Add_Click({
         }
     }
 
-    # Initialize results window
     Show-ResultsWindow
     $progressBar.Maximum = $computers.Count
     $totalComputers = $computers.Count
     $updateInterval = if ($totalComputers -gt 0) { [Math]::Ceiling($totalComputers * 0.25) } else { 1 }
     $processedCount = 0
 
-    # Start background job
     $scriptBlock = [ScriptBlock]::Create($commandText)
     $script:Job = Invoke-Command -ComputerName $computers -ScriptBlock $scriptBlock -ThrottleLimit $numThrottle.Value -AsJob -SessionOption (New-PSSessionOption -OperationTimeout 30000)
 
-    # Create timer for UI updates
     $script:Timer = New-Object System.Windows.Forms.Timer
-    $script:Timer.Interval = 1000  # Update every second
+    $script:Timer.Interval = 1000
     $script:Timer.Add_Tick({
         if ($script:Job -and $script:Job.State -eq "Running" -and -not $script:IsCancelled) {
             $completedJobs = $script:Job.ChildJobs | Where-Object { $_.State -ne "Running" }
@@ -400,7 +377,6 @@ $btnRun.Add_Click({
             $progressBar.Value = $processedCount
             $lblStatus.Text = "Processing... ($processedCount of $totalComputers)"
             
-            # Collect partial results
             $partialResults = $script:Job | Receive-Job -Keep -ErrorAction SilentlyContinue
             foreach ($item in $partialResults) {
                 if (-not ($script:ResultsList | Where-Object { $_.ComputerName -eq $item.PSComputerName })) {
@@ -412,12 +388,11 @@ $btnRun.Add_Click({
                     }
                     $script:ResultsList.Add($result) | Out-Null
                     if ($chkSaveCsv.Checked -and $script:CsvPath) {
-                        $result | Export-Csv -Path $script:CsvPath -NoTypeInformation -Append -ErrorAction SilentlyContinue
+                        $result | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1 | Out-File -FilePath $script:CsvPath -Append -Encoding UTF8 -ErrorAction SilentlyContinue
                     }
                 }
             }
 
-            # Check for failed jobs
             $failedJobs = $script:Job.ChildJobs | Where-Object { $_.State -eq "Failed" }
             foreach ($job in $failedJobs) {
                 $computer = $job.Location
@@ -425,18 +400,17 @@ $btnRun.Add_Click({
                     $errorMessage = $job.ChildJobs[0].Error | Out-String
                     $result = [PSCustomObject]@{
                         ComputerName = $computer
-                        Output       = "[Error] $errorMessage"
+                        Output       = "[Error]: $errorMessage"
                         Status       = if ($errorMessage -match "not online") { "Offline" } else { "Error" }
                         Timestamp    = Get-Date
                     }
                     $script:ResultsList.Add($result) | Out-Null
                     if ($chkSaveCsv.Checked -and $script:CsvPath) {
-                        $result | Export-Csv -Path $script:CsvPath -NoTypeInformation -Append -ErrorAction SilentlyContinue
+                        $result | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1 | Out-File -FilePath $script:CsvPath -Append -Encoding UTF8 -ErrorAction SilentlyContinue
                     }
                 }
             }
 
-            # Update DataGridView at intervals
             if ($totalComputers -gt 0 -and ($processedCount % $updateInterval -eq 0 -or $processedCount -eq $totalComputers)) {
                 Update-DataGridView -results $script:ResultsList
             }
@@ -457,7 +431,6 @@ $btnRun.Add_Click({
                 $lblStatus.Text = "Execution cancelled"
             }
             else {
-                # Final results collection
                 if ($script:Job) {
                     $finalResults = $script:Job | Receive-Job -ErrorAction SilentlyContinue -ErrorVariable jobErrors
                     $script:Job | Remove-Job -Force -ErrorAction SilentlyContinue
@@ -473,30 +446,28 @@ $btnRun.Add_Click({
                             }
                             $script:ResultsList.Add($result) | Out-Null
                             if ($chkSaveCsv.Checked -and $script:CsvPath) {
-                                $result | Export-Csv -Path $script:CsvPath -NoTypeInformation -Append -ErrorAction SilentlyContinue
+                                $result | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1 | Out-File -FilePath $script:CsvPath -Append -Encoding UTF8 -ErrorAction SilentlyContinue
                             }
                         }
                     }
 
-                    # Handle job errors
                     foreach ($error in $jobErrors) {
                         $computer = $error.TargetObject
                         if (-not ($script:ResultsList | Where-Object { $_.ComputerName -eq $computer })) {
                             $errorMessage = $error.Exception.Message
                             $result = [PSCustomObject]@{
                                 ComputerName = $computer
-                                Output       = "[Error] $errorMessage"
+                                Output       = "[Error]: $errorMessage"
                                 Status       = if ($errorMessage -match "not online") { "Offline" } else { "Error" }
                                 Timestamp    = Get-Date
                             }
                             $script:ResultsList.Add($result) | Out-Null
                             if ($chkSaveCsv.Checked -and $script:CsvPath) {
-                                $result | Export-Csv -Path $script:CsvPath -NoTypeInformation -Append -ErrorAction SilentlyContinue
+                                $result | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1 | Out-File -FilePath $script:CsvPath -Append -Encoding UTF8 -ErrorAction SilentlyContinue
                             }
                         }
                     }
 
-                    # Ensure all computers are accounted for
                     foreach ($computer in $computers) {
                         if (-not ($script:ResultsList | Where-Object { $_.ComputerName -eq $computer })) {
                             $result = [PSCustomObject]@{
@@ -507,7 +478,7 @@ $btnRun.Add_Click({
                             }
                             $script:ResultsList.Add($result) | Out-Null
                             if ($chkSaveCsv.Checked -and $script:CsvPath) {
-                                $result | Export-Csv -Path $script:CsvPath -NoTypeInformation -Append -ErrorAction SilentlyContinue
+                                $result | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1 | Out-File -FilePath $script:CsvPath -Append -Encoding UTF8 -ErrorAction SilentlyContinue
                             }
                         }
                     }
@@ -528,13 +499,11 @@ $btnRun.Add_Click({
     }
 })
 
-# btnCancel click event
 $btnCancel.Add_Click({
     $script:IsCancelled = $true
     $lblStatus.Text = "Cancelling execution..."
 })
 
-# Clean up on form close
 $form.Add_FormClosing({
     $script:IsCancelled = $true
     if ($script:Job -and $script:Job.State -eq "Running") {
@@ -550,11 +519,9 @@ $form.Add_FormClosing({
     Get-PSSession | Remove-PSSession -ErrorAction SilentlyContinue
 })
 
-# Initialize log file
 $remoteICMDir = "$env:USERPROFILE\Desktop\RemoteICM"
 if (-not (Test-Path $remoteICMDir)) { New-Item -Path $remoteICMDir -ItemType Directory -Force | Out-Null }
 if (Test-Path $script:LogPath) { Clear-Content -Path $script:LogPath }
 Add-Content -Path $script:LogPath -Value "$(Get-Date): Script initialized" -ErrorAction SilentlyContinue
 
-# Show the form
 $form.ShowDialog()
