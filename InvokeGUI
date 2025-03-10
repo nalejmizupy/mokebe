@@ -275,23 +275,43 @@ function Show-ResultsWindow {
     if (-not $script:ResultsWindow -or $script:ResultsWindow.IsDisposed) {
         $script:ResultsWindow = New-Object System.Windows.Forms.Form
         $script:ResultsWindow.Text = "Command Execution Results"
-        $script:ResultsWindow.Size = New-Object System.Drawing.Size(800,600)
+        $script:ResultsWindow.Size = New-Object System.Drawing.Size(1000,600)
         $script:ResultsWindow.StartPosition = "CenterScreen"
         
         $script:DataGridView = New-Object System.Windows.Forms.DataGridView
         $script:DataGridView.Dock = "Fill"
-        $script:DataGridView.AutoSizeColumnsMode = "DisplayedCells"
+        $script:DataGridView.AutoSizeColumnsMode = "None"
         $script:DataGridView.ReadOnly = $true
         $script:DataGridView.ScrollBars = "Both"
         $script:DataGridView.ColumnHeadersHeightSizeMode = "AutoSize"
         $script:DataGridView.AllowUserToResizeColumns = $true
         $script:DataGridView.AllowUserToResizeRows = $true
-        $script:DataGridView.Columns.Add("ComputerName", "Computer Name") | Out-Null
-        $script:DataGridView.Columns.Add("Status", "Status") | Out-Null
-        $script:DataGridView.Columns.Add("Timestamp", "Timestamp") | Out-Null
-        $script:DataGridView.Columns.Add("Output", "Output") | Out-Null
         
-        $script:DataGridView.Columns["Output"].DefaultCellStyle.WrapMode = "True"
+        $colComputerName = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+        $colComputerName.Name = "ComputerName"
+        $colComputerName.HeaderText = "Computer Name"
+        $colComputerName.Width = 150
+        $script:DataGridView.Columns.Add($colComputerName) | Out-Null
+        
+        $colStatus = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+        $colStatus.Name = "Status"
+        $colStatus.HeaderText = "Status"
+        $colStatus.Width = 100
+        $script:DataGridView.Columns.Add($colStatus) | Out-Null
+        
+        $colTimestamp = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+        $colTimestamp.Name = "Timestamp"
+        $colTimestamp.HeaderText = "Timestamp"
+        $colTimestamp.Width = 150
+        $script:DataGridView.Columns.Add($colTimestamp) | Out-Null
+        
+        $colOutput = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+        $colOutput.Name = "Output"
+        $colOutput.HeaderText = "Output"
+        $colOutput.Width = 500
+        $colOutput.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::True
+        $script:DataGridView.Columns.Add($colOutput) | Out-Null
+        
         $script:DataGridView.AutoSizeRowsMode = "AllCells"
         
         $script:ResultsWindow.Controls.Add($script:DataGridView)
@@ -342,14 +362,13 @@ $btnRun.Add_Click({
         [System.Windows.Forms.MessageBox]::Show("Failed to save last list/commands: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 
-    # Initialize CSV file if saving is enabled
+    # Initialize CSV file without duplicating header
     if ($chkSaveCsv.Checked) {
         try {
             $remoteICMDir = "$env:USERPROFILE\Desktop\RemoteICM"
             $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
             $script:CsvPath = "$remoteICMDir\RemoteCommandResults_$timestamp.csv"
-            [PSCustomObject]@{ ComputerName = "ComputerName"; Status = "Status"; Timestamp = "Timestamp"; Output = "Output" } | 
-                Export-Csv -Path $script:CsvPath -NoTypeInformation -ErrorAction Stop
+            @() | Export-Csv -Path $script:CsvPath -NoTypeInformation -ErrorAction Stop
         }
         catch {
             [System.Windows.Forms.MessageBox]::Show("Failed to initialize CSV: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
@@ -381,7 +400,7 @@ $btnRun.Add_Click({
             $progressBar.Value = $processedCount
             $lblStatus.Text = "Processing... ($processedCount of $totalComputers)"
             
-            # Collect partial results and write to CSV immediately
+            # Collect partial results
             $partialResults = $script:Job | Receive-Job -Keep -ErrorAction SilentlyContinue
             foreach ($item in $partialResults) {
                 if (-not ($script:ResultsList | Where-Object { $_.ComputerName -eq $item.PSComputerName })) {
@@ -398,7 +417,7 @@ $btnRun.Add_Click({
                 }
             }
 
-            # Check for errors in child jobs and set output to "[Error]"
+            # Check for failed jobs
             $failedJobs = $script:Job.ChildJobs | Where-Object { $_.State -eq "Failed" }
             foreach ($job in $failedJobs) {
                 $computer = $job.Location
@@ -406,7 +425,7 @@ $btnRun.Add_Click({
                     $errorMessage = $job.ChildJobs[0].Error | Out-String
                     $result = [PSCustomObject]@{
                         ComputerName = $computer
-                        Output       = "[Error]"
+                        Output       = "[Error] $errorMessage"
                         Status       = if ($errorMessage -match "not online") { "Offline" } else { "Error" }
                         Timestamp    = Get-Date
                     }
@@ -417,7 +436,7 @@ $btnRun.Add_Click({
                 }
             }
 
-            # Update DataGridView at 25% intervals
+            # Update DataGridView at intervals
             if ($totalComputers -gt 0 -and ($processedCount % $updateInterval -eq 0 -or $processedCount -eq $totalComputers)) {
                 Update-DataGridView -results $script:ResultsList
             }
@@ -438,7 +457,7 @@ $btnRun.Add_Click({
                 $lblStatus.Text = "Execution cancelled"
             }
             else {
-                # Final results collection (only for missed results)
+                # Final results collection
                 if ($script:Job) {
                     $finalResults = $script:Job | Receive-Job -ErrorAction SilentlyContinue -ErrorVariable jobErrors
                     $script:Job | Remove-Job -Force -ErrorAction SilentlyContinue
@@ -453,39 +472,43 @@ $btnRun.Add_Click({
                                 Timestamp    = Get-Date
                             }
                             $script:ResultsList.Add($result) | Out-Null
+                            if ($chkSaveCsv.Checked -and $script:CsvPath) {
+                                $result | Export-Csv -Path $script:CsvPath -NoTypeInformation -Append -ErrorAction SilentlyContinue
+                            }
                         }
                     }
 
-                    # Handle job errors with output as "[Error]"
+                    # Handle job errors
                     foreach ($error in $jobErrors) {
                         $computer = $error.TargetObject
                         if (-not ($script:ResultsList | Where-Object { $_.ComputerName -eq $computer })) {
                             $errorMessage = $error.Exception.Message
                             $result = [PSCustomObject]@{
                                 ComputerName = $computer
-                                Output       = "[Error]"
+                                Output       = "[Error] $errorMessage"
                                 Status       = if ($errorMessage -match "not online") { "Offline" } else { "Error" }
                                 Timestamp    = Get-Date
                             }
                             $script:ResultsList.Add($result) | Out-Null
+                            if ($chkSaveCsv.Checked -and $script:CsvPath) {
+                                $result | Export-Csv -Path $script:CsvPath -NoTypeInformation -Append -ErrorAction SilentlyContinue
+                            }
                         }
                     }
-                }
 
-                # Ensure all computers are accounted for with output as "[Error]" for errors
-                foreach ($computer in $computers) {
-                    if (-not ($script:ResultsList | Where-Object { $_.ComputerName -eq $computer })) {
-                        $jobForComputer = $script:Job.ChildJobs | Where-Object { $_.Location -eq $computer } | Select-Object -First 1
-                        $errorMessage = if ($jobForComputer) { $jobForComputer.Error | Out-String } else { "No response received" }
-                        $result = [PSCustomObject]@{
-                            ComputerName = $computer
-                            Output       = "[Error]"
-                            Status       = "Error"
-                            Timestamp    = Get-Date
-                        }
-                        $script:ResultsList.Add($result) | Out-Null
-                        if ($chkSaveCsv.Checked -and $script:CsvPath) {
-                            $result | Export-Csv -Path $script:CsvPath -NoTypeInformation -Append -ErrorAction SilentlyContinue
+                    # Ensure all computers are accounted for
+                    foreach ($computer in $computers) {
+                        if (-not ($script:ResultsList | Where-Object { $_.ComputerName -eq $computer })) {
+                            $result = [PSCustomObject]@{
+                                ComputerName = $computer
+                                Output       = "[No Response]"
+                                Status       = "No Response"
+                                Timestamp    = Get-Date
+                            }
+                            $script:ResultsList.Add($result) | Out-Null
+                            if ($chkSaveCsv.Checked -and $script:CsvPath) {
+                                $result | Export-Csv -Path $script:CsvPath -NoTypeInformation -Append -ErrorAction SilentlyContinue
+                            }
                         }
                     }
                 }
