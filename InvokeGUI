@@ -1,31 +1,26 @@
 Add-Type -AssemblyName System.Windows.Forms
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-Add-Type @"
-    using System;
-    using System.Runtime.InteropServices;
-    public class ConsoleHelper {
-        [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
-        [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-        public const int SW_HIDE = 0;
-    }
-"@
+# Global variables
+$script:LogPath = "$env:USERPROFILE\Desktop\RemoteICM\DebugLog.txt"
+$script:CsvPath = $null
+$script:IsCancelled = $false
+$script:Timer = $null
+$script:RunspacePool = $null
+$script:PSInstances = [System.Collections.ArrayList]::new()
+$script:CurrentResultsForm = $null
+$script:CurrentDataGridView = $null
+$script:TotalComputers = 0
+$script:EnableDebugLog = $false
 
-function Hide-Console {
-    $consoleWindow = [ConsoleHelper]::GetConsoleWindow()
-    if ($consoleWindow -ne [IntPtr]::Zero) {
-        [ConsoleHelper]::ShowWindow($consoleWindow, [ConsoleHelper]::SW_HIDE) | Out-Null
-    }
-}
-
-#Hide-Console
-
+# Create main form
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Remote Command Executor"
 $form.Size = New-Object System.Drawing.Size(600,500)
 $form.StartPosition = "CenterScreen"
 $form.MinimumSize = New-Object System.Drawing.Size(400,400)
 
+# Computer names controls
 $lblComputers = New-Object System.Windows.Forms.Label
 $lblComputers.Text = "Computer Names (separate by ; or new line):"
 $lblComputers.Location = New-Object System.Drawing.Point(10,10)
@@ -89,62 +84,32 @@ $txtComputers = New-Object System.Windows.Forms.TextBox
 $txtComputers.Multiline = $true
 $txtComputers.Location = New-Object System.Drawing.Point(10,30)
 $txtComputers.Size = New-Object System.Drawing.Size(560,150)
+$txtComputers.MinimumSize = New-Object System.Drawing.Size(200,50)
 $txtComputers.Anchor = 'Top,Left,Right'
 $txtComputers.ScrollBars = 'Vertical'
 $form.Controls.Add($txtComputers)
 
+# Commands controls
 $lblCommands = New-Object System.Windows.Forms.Label
 $lblCommands.Text = "Commands to Execute:"
 $lblCommands.Location = New-Object System.Drawing.Point(10,190)
 $lblCommands.AutoSize = $true
 $form.Controls.Add($lblCommands)
 
-$btnGetMSI = New-Object System.Windows.Forms.Button
-$btnGetMSI.Text = "GetMSI"
-$btnGetMSI.Size = New-Object System.Drawing.Size(60,20)
-$btnGetMSI.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 410),190)
-$btnGetMSI.Anchor = 'Top,Right'
-$btnGetMSI.Add_Click({
-    try {
-        $msiPath = "$env:USERPROFILE\Desktop\RemoteICM\GetMSI.ps1"
-        if (Test-Path $msiPath) {
-            $txtCommands.Text = Get-Content -Path $msiPath -Raw -ErrorAction Stop
-        } else {
-            [System.Windows.Forms.MessageBox]::Show("GetMSI.ps1 not found in RemoteICM directory.", "Info", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        }
-    }
-    catch {
-        [System.Windows.Forms.MessageBox]::Show("Failed to load GetMSI.ps1: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-    }
-})
-$form.Controls.Add($btnGetMSI)
+$btnClearCommands = New-Object System.Windows.Forms.Button
+$btnClearCommands.Text = "Clear"
+$btnClearCommands.Size = New-Object System.Drawing.Size(60,20)
+$btnClearCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 62),190)
+$btnClearCommands.Anchor = 'Top,Right'
+$btnClearCommands.Add_Click({ $txtCommands.Text = "" })
+$form.Controls.Add($btnClearCommands)
 
-$btnGetWorkstationInfo = New-Object System.Windows.Forms.Button
-$btnGetWorkstationInfo.Text = "GetWorkstationInfo"
-$btnGetWorkstationInfo.Size = New-Object System.Drawing.Size(110,20)
-$btnGetWorkstationInfo.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 348),190)
-$btnGetWorkstationInfo.Anchor = 'Top,Right'
-$btnGetWorkstationInfo.Add_Click({
-    try {
-        $workstationPath = "$env:USERPROFILE\Desktop\RemoteICM\GetWorkstationInfo.ps1"
-        if (Test-Path $workstationPath) {
-            $txtCommands.Text = Get-Content -Path $workstationPath -Raw -ErrorAction Stop
-        } else {
-            [System.Windows.Forms.MessageBox]::Show("GetWorkstationInfo.ps1 not found in RemoteICM directory.", "Info", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-        }
-    }
-    catch {
-        [System.Windows.Forms.MessageBox]::Show("Failed to load GetWorkstationInfo.ps1: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-    }
-})
-$form.Controls.Add($btnGetWorkstationInfo)
-
-$btnLoadFromFile = New-Object System.Windows.Forms.Button
-$btnLoadFromFile.Text = "Load from File"
-$btnLoadFromFile.Size = New-Object System.Drawing.Size(90,20)
-$btnLoadFromFile.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 236),190)
-$btnLoadFromFile.Anchor = 'Top,Right'
-$btnLoadFromFile.Add_Click({
+$btnLoadCommands = New-Object System.Windows.Forms.Button
+$btnLoadCommands.Text = "Load from File"
+$btnLoadCommands.Size = New-Object System.Drawing.Size(90,20)
+$btnLoadCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 154),190)
+$btnLoadCommands.Anchor = 'Top,Right'
+$btnLoadCommands.Add_Click({
     try {
         $openFileDialog = New-Object System.Windows.Forms.OpenFileDialog
         $openFileDialog.Filter = "Common types (*.txt;*.bat;*.ps1)|*.txt;*.bat;*.ps1|All files (*.*)|*.*"
@@ -157,44 +122,58 @@ $btnLoadFromFile.Add_Click({
         [System.Windows.Forms.MessageBox]::Show("Failed to load commands from file: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 })
-$form.Controls.Add($btnLoadFromFile)
+$form.Controls.Add($btnLoadCommands)
 
-$btnImportLastCommand = New-Object System.Windows.Forms.Button
-$btnImportLastCommand.Text = "Import Last"
-$btnImportLastCommand.Size = New-Object System.Drawing.Size(80,20)
-$btnImportLastCommand.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 144),190)
-$btnImportLastCommand.Anchor = 'Top,Right'
-$btnImportLastCommand.Add_Click({
+$btnGetWorkstationInfo = New-Object System.Windows.Forms.Button
+$btnGetWorkstationInfo.Text = "GetWorkstationInfo"
+$btnGetWorkstationInfo.Size = New-Object System.Drawing.Size(110,20)
+$btnGetWorkstationInfo.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 266),190)
+$btnGetWorkstationInfo.Anchor = 'Top,Right'
+$btnGetWorkstationInfo.Add_Click({
     try {
-        $lastCommandPath = "$env:USERPROFILE\Desktop\RemoteICM\lastPS.ps1"
-        if (Test-Path $lastCommandPath) {
-            $txtCommands.Text = Get-Content -Path $lastCommandPath -Raw -ErrorAction Stop
+        $infoPath = "$env:USERPROFILE\Desktop\RemoteICM\GetWorkstationInfo.ps1"
+        if (Test-Path $infoPath) {
+            $txtCommands.Text = Get-Content -Path $infoPath -Raw -ErrorAction Stop
         } else {
-            [System.Windows.Forms.MessageBox]::Show("Last command file (lastPS.ps1) not found.", "Info", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            [System.Windows.Forms.MessageBox]::Show("GetWorkstationInfo.ps1 not found in $env:USERPROFILE\Desktop\RemoteICM.", "Info", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         }
     }
     catch {
-        [System.Windows.Forms.MessageBox]::Show("Failed to import last command: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        [System.Windows.Forms.MessageBox]::Show("Failed to import GetWorkstationInfo.ps1: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 })
-$form.Controls.Add($btnImportLastCommand)
+$form.Controls.Add($btnGetWorkstationInfo)
 
-$btnClearCommands = New-Object System.Windows.Forms.Button
-$btnClearCommands.Text = "Clear"
-$btnClearCommands.Size = New-Object System.Drawing.Size(60,20)
-$btnClearCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 62),190)
-$btnClearCommands.Anchor = 'Top,Right'
-$btnClearCommands.Add_Click({ $txtCommands.Text = "" })
-$form.Controls.Add($btnClearCommands)
+$btnImportLastPS = New-Object System.Windows.Forms.Button
+$btnImportLastPS.Text = "Import Last"
+$btnImportLastPS.Size = New-Object System.Drawing.Size(80,20)
+$btnImportLastPS.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 348),190)
+$btnImportLastPS.Anchor = 'Top,Right'
+$btnImportLastPS.Add_Click({
+    try {
+        $lastPSPath = "$env:USERPROFILE\Desktop\RemoteICM\lastPS.ps1"
+        if (Test-Path $lastPSPath) {
+            $txtCommands.Text = Get-Content -Path $lastPSPath -Raw -ErrorAction Stop
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("Last command file not found.", "Info", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        }
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to import last commands: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+$form.Controls.Add($btnImportLastPS)
 
 $txtCommands = New-Object System.Windows.Forms.TextBox
 $txtCommands.Multiline = $true
 $txtCommands.Location = New-Object System.Drawing.Point(10,210)
 $txtCommands.Size = New-Object System.Drawing.Size(560,100)
+$txtCommands.MinimumSize = New-Object System.Drawing.Size(200,50)
 $txtCommands.Anchor = 'Top,Left,Right'
 $txtCommands.ScrollBars = 'Vertical'
 $form.Controls.Add($txtCommands)
 
+# Throttle limit control
 $lblThrottle = New-Object System.Windows.Forms.Label
 $lblThrottle.Text = "Throttle Limit:"
 $lblThrottle.Location = New-Object System.Drawing.Point(10,320)
@@ -211,12 +190,14 @@ $numThrottle.Location = New-Object System.Drawing.Point(($form.ClientSize.Width 
 $numThrottle.Anchor = 'Bottom,Right'
 $form.Controls.Add($numThrottle)
 
+# Progress bar
 $progressBar = New-Object System.Windows.Forms.ProgressBar
 $progressBar.Location = New-Object System.Drawing.Point(10,350)
 $progressBar.Size = New-Object System.Drawing.Size(560,20)
 $progressBar.Anchor = 'Bottom,Left,Right'
 $form.Controls.Add($progressBar)
 
+# Save to CSV checkbox
 $chkSaveCsv = New-Object System.Windows.Forms.CheckBox
 $chkSaveCsv.Text = "Save Results to CSV File"
 $chkSaveCsv.Location = New-Object System.Drawing.Point(10,380)
@@ -224,6 +205,7 @@ $chkSaveCsv.Size = New-Object System.Drawing.Size(150,20)
 $chkSaveCsv.Anchor = 'Bottom,Left'
 $form.Controls.Add($chkSaveCsv)
 
+# Run and Cancel buttons
 $btnRun = New-Object System.Windows.Forms.Button
 $btnRun.Text = "Execute"
 $btnRun.Location = New-Object System.Drawing.Point(10,410)
@@ -239,119 +221,165 @@ $btnCancel.Anchor = 'Bottom,Left'
 $btnCancel.Enabled = $false
 $form.Controls.Add($btnCancel)
 
+# Status label
 $lblStatus = New-Object System.Windows.Forms.Label
 $lblStatus.Location = New-Object System.Drawing.Point(230,415)
 $lblStatus.Size = New-Object System.Drawing.Size(400,20)
 $lblStatus.Anchor = 'Bottom,Left'
 $form.Controls.Add($lblStatus)
 
-$script:LogPath = "$env:USERPROFILE\Desktop\RemoteICM\DebugLog.txt"
-$script:CsvPath = $null
-$script:IsCancelled = $false
-$script:Job = $null
-$script:ResultsWindow = $null
-$script:DataGridView = $null
-$script:ResultsList = [System.Collections.ArrayList]::new()
-$script:Timer = $null
+# Form resize event
+$form.Add_Resize({
+    $txtComputers.Width = $form.ClientSize.Width - 20
+    $txtCommands.Width = $form.ClientSize.Width - 20
+    $progressBar.Width = $form.ClientSize.Width - 20
+    $lblStatus.Width = $form.ClientSize.Width - 240
 
-function Show-ResultsWindow {
-    if (-not $script:ResultsWindow -or $script:ResultsWindow.IsDisposed) {
-        $script:ResultsWindow = New-Object System.Windows.Forms.Form
-        $script:ResultsWindow.Text = "Command Execution Results"
-        $script:ResultsWindow.Size = New-Object System.Drawing.Size(800,600)
-        $script:ResultsWindow.StartPosition = "CenterScreen"
+    $btnClearComputers.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 62),10)
+    $btnImportLastList.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 144),10)
+    $btnImportAD.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 226),10)
+    $btnClearCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 62), ($txtComputers.Bottom + 10))
+    $btnLoadCommands.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 154), ($txtComputers.Bottom + 10))
+    $btnGetWorkstationInfo.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 266), ($txtComputers.Bottom + 10))
+    $btnImportLastPS.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 348), ($txtComputers.Bottom + 10))
+    $numThrottle.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 60), ($txtComputers.Bottom + 138))
+
+    $bottomControlsHeight = 90
+    $availableHeight = $form.ClientSize.Height - $bottomControlsHeight - 60
+    
+    if ($availableHeight -gt 150) {
+        $txtComputers.Height = [Math]::Min($availableHeight * 0.6, 300)
+        $lblCommands.Location = New-Object System.Drawing.Point(10, ($txtComputers.Bottom + 10))
+        $txtCommands.Location = New-Object System.Drawing.Point(10, ($lblCommands.Bottom + 10))
+        $txtCommands.Height = $availableHeight - $txtComputers.Height - 40
         
-        $script:DataGridView = New-Object System.Windows.Forms.DataGridView
-        $script:DataGridView.Dock = "Fill"
-        $script:DataGridView.AutoSizeColumnsMode = "None"
-        $script:DataGridView.ReadOnly = $true
-        $script:DataGridView.ScrollBars = "Both"
-        $script:DataGridView.ColumnHeadersHeightSizeMode = "AutoSize"
-        $script:DataGridView.AllowUserToResizeColumns = $true
-        $script:DataGridView.AllowUserToResizeRows = $true
-        
-        $colComputerName = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
-        $colComputerName.Name = "ComputerName"
-        $colComputerName.HeaderText = "Computer Name"
-        $colComputerName.Width = 150
-        $script:DataGridView.Columns.Add($colComputerName) | Out-Null
-        
-        $colStatus = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
-        $colStatus.Name = "Status"
-        $colStatus.HeaderText = "Status"
-        $colStatus.Width = 100
-        $script:DataGridView.Columns.Add($colStatus) | Out-Null
-        
-        $colTimestamp = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
-        $colTimestamp.Name = "Timestamp"
-        $colTimestamp.HeaderText = "Timestamp"
-        $colTimestamp.Width = 150
-        $script:DataGridView.Columns.Add($colTimestamp) | Out-Null
-        
-        $colOutput = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
-        $colOutput.Name = "Output"
-        $colOutput.HeaderText = "Output"
-        $colOutput.Width = 400
-        $colOutput.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::True
-        $script:DataGridView.Columns.Add($colOutput) | Out-Null
-        
-        $script:DataGridView.AutoSizeRowsMode = "AllCells"
-        
-        $script:ResultsWindow.Controls.Add($script:DataGridView)
-        $script:ResultsWindow.Show()
+        $lblThrottle.Location = New-Object System.Drawing.Point(10, ($form.ClientSize.Height - 90))
+        $numThrottle.Location = New-Object System.Drawing.Point(($form.ClientSize.Width - 60), ($form.ClientSize.Height - 92))
+        $progressBar.Location = New-Object System.Drawing.Point(10, ($form.ClientSize.Height - 70))
+        $chkSaveCsv.Location = New-Object System.Drawing.Point(10, ($form.ClientSize.Height - 50))
+        $btnRun.Location = New-Object System.Drawing.Point(10, ($form.ClientSize.Height - 30))
+        $btnCancel.Location = New-Object System.Drawing.Point(120, ($form.ClientSize.Height - 30))
+        $lblStatus.Location = New-Object System.Drawing.Point(230, ($form.ClientSize.Height - 25))
     }
-}
+})
 
-function Update-DataGridView {
-    param($results)
-    if ($script:DataGridView) {
-        $script:DataGridView.Rows.Clear()
-        foreach ($result in $results) {
-            $script:DataGridView.Rows.Add($result.ComputerName, $result.Status, $result.Timestamp, $result.Output) | Out-Null
+# Function to create results window
+function New-ResultsWindow {
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "Remote Command Results - $(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    $form.Size = New-Object System.Drawing.Size(600,400)
+    $form.StartPosition = "CenterScreen"
+    $form.MinimumSize = New-Object System.Drawing.Size(400,300)
+
+    $script:CurrentDataGridView = New-Object System.Windows.Forms.DataGridView
+    $script:CurrentDataGridView.Location = New-Object System.Drawing.Point(10,10)
+    $script:CurrentDataGridView.Dock = 'Fill'
+    $script:CurrentDataGridView.Padding = New-Object System.Windows.Forms.Padding(10)
+    $script:CurrentDataGridView.ScrollBars = 'Both'
+    $script:CurrentDataGridView.AutoSizeColumnsMode = 'DisplayedCells'
+    $script:CurrentDataGridView.AutoSizeRowsMode = 'AllCells'
+    $script:CurrentDataGridView.ReadOnly = $true
+    $script:CurrentDataGridView.AllowUserToAddRows = $false
+    $script:CurrentDataGridView.AllowUserToDeleteRows = $false
+    $script:CurrentDataGridView.ColumnCount = 4
+    $script:CurrentDataGridView.Columns[0].Name = "ComputerName"
+    $script:CurrentDataGridView.Columns[1].Name = "Status"
+    $script:CurrentDataGridView.Columns[2].Name = "Timestamp"
+    $script:CurrentDataGridView.Columns[3].Name = "Output"
+    $script:CurrentDataGridView.Columns[3].AutoSizeMode = 'Fill'
+    $script:CurrentDataGridView.Columns[3].DefaultCellStyle.WrapMode = 'True'
+    $form.Controls.Add($script:CurrentDataGridView)
+
+    $form.Add_Resize({
+        if ($script:CurrentDataGridView -and -not $script:CurrentDataGridView.IsDisposed) {
+            $form.PerformLayout()
+            if ($script:EnableDebugLog) {
+                Add-Content -Path $script:LogPath -Value "$(Get-Date): DataGridView resized to Width: $($script:CurrentDataGridView.Width), Height: $($script:CurrentDataGridView.Height)" -ErrorAction SilentlyContinue
+            }
         }
-        $script:DataGridView.Refresh()
-    }
+    })
+
+    $form.Add_FormClosing({
+        $script:CurrentResultsForm = $null
+        $script:CurrentDataGridView = $null
+    })
+
+    return $form
 }
 
+# Button click events
 $btnRun.Add_Click({
     $script:IsCancelled = $false
     $lblStatus.Text = "Starting execution..."
     $btnRun.Enabled = $false
     $btnCancel.Enabled = $true
     $progressBar.Value = 0
+    $script:PSInstances.Clear()
     $form.Refresh()
 
     $computers = $txtComputers.Text -split '[;\r\n]' | Where-Object { $_ -ne "" }
     $commandText = $txtCommands.Text.Trim()
-    $script:ResultsList.Clear()
+    
+    if ($script:EnableDebugLog) {
+        Add-Content -Path $script:LogPath -Value "$(Get-Date): btnRun clicked, Computers: $($computers.Count), Command: $commandText, Throttle: $($numThrottle.Value)" -ErrorAction SilentlyContinue
+    }
     
     if ($computers.Count -eq 0 -or [string]::IsNullOrWhiteSpace($commandText)) {
         [System.Windows.Forms.MessageBox]::Show("Please enter computer names and commands.", "Input Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        if ($script:EnableDebugLog) {
+            Add-Content -Path $script:LogPath -Value "$(Get-Date): Input validation failed" -ErrorAction SilentlyContinue
+        }
         $btnRun.Enabled = $true
         $btnCancel.Enabled = $false
         $lblStatus.Text = ""
         return
     }
 
+    $invalidComputers = $computers | Where-Object { $_ -match '[^\w\.-]' }
+    if ($invalidComputers) {
+        [System.Windows.Forms.MessageBox]::Show("Invalid computer names detected: $($invalidComputers -join ', ')", "Validation Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        if ($script:EnableDebugLog) {
+            Add-Content -Path $script:LogPath -Value "$(Get-Date): Invalid computer names: $($invalidComputers -join ', ')" -ErrorAction SilentlyContinue
+        }
+        $btnRun.Enabled = $true
+        $btnCancel.Enabled = $false
+        $lblStatus.Text = ""
+        return
+    }
+
+    # Save last computer list and commands
     try {
         $remoteICMDir = "$env:USERPROFILE\Desktop\RemoteICM"
         if (-not (Test-Path $remoteICMDir)) { New-Item -Path $remoteICMDir -ItemType Directory -Force | Out-Null }
         $txtComputers.Text | Out-File -FilePath "$remoteICMDir\lastLIST.txt" -Encoding UTF8 -ErrorAction Stop
         $txtCommands.Text | Out-File -FilePath "$remoteICMDir\lastPS.ps1" -Encoding UTF8 -ErrorAction Stop
+        if ($script:EnableDebugLog) {
+            Add-Content -Path $script:LogPath -Value "$(Get-Date): Saved last list and commands" -ErrorAction SilentlyContinue
+        }
     }
     catch {
         [System.Windows.Forms.MessageBox]::Show("Failed to save last list/commands: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        if ($script:EnableDebugLog) {
+            Add-Content -Path $script:LogPath -Value "$(Get-Date): Failed to save last list/commands: $_" -ErrorAction SilentlyContinue
+        }
     }
 
+    # Initialize CSV file if saving is enabled
     if ($chkSaveCsv.Checked) {
         try {
             $remoteICMDir = "$env:USERPROFILE\Desktop\RemoteICM"
             $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
             $script:CsvPath = "$remoteICMDir\RemoteCommandResults_$timestamp.csv"
-            "ComputerName,Status,Timestamp,Output" | Out-File -FilePath $script:CsvPath -Encoding UTF8 -ErrorAction Stop
+            [PSCustomObject]@{ ComputerName = ""; Status = ""; Timestamp = ""; Output = "" } | Export-Csv -Path $script:CsvPath -NoTypeInformation -ErrorAction Stop
+            if ($script:EnableDebugLog) {
+                Add-Content -Path $script:LogPath -Value "$(Get-Date): Initialized CSV at $script:CsvPath" -ErrorAction SilentlyContinue
+            }
         }
         catch {
             [System.Windows.Forms.MessageBox]::Show("Failed to initialize CSV: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            if ($script:EnableDebugLog) {
+                Add-Content -Path $script:LogPath -Value "$(Get-Date): Failed to initialize CSV: $_" -ErrorAction SilentlyContinue
+            }
             $btnRun.Enabled = $true
             $btnCancel.Enabled = $false
             $lblStatus.Text = ""
@@ -359,169 +387,251 @@ $btnRun.Add_Click({
         }
     }
 
-    Show-ResultsWindow
-    $progressBar.Maximum = $computers.Count
-    $totalComputers = $computers.Count
-    $updateInterval = if ($totalComputers -gt 0) { [Math]::Ceiling($totalComputers * 0.25) } else { 1 }
-    $processedCount = 0
+    # Create new results window for each run
+    $script:CurrentResultsForm = New-ResultsWindow
+    if ($script:EnableDebugLog) {
+        Add-Content -Path $script:LogPath -Value "$(Get-Date): Results window created" -ErrorAction SilentlyContinue
+    }
+    $script:CurrentResultsForm.Show()
 
     $scriptBlock = [ScriptBlock]::Create($commandText)
-    $script:Job = Invoke-Command -ComputerName $computers -ScriptBlock $scriptBlock -ThrottleLimit $numThrottle.Value -AsJob -SessionOption (New-PSSessionOption -OperationTimeout 30000)
+    $script:TotalComputers = $computers.Count
+    $progressBar.Maximum = $script:TotalComputers
+    if ($script:EnableDebugLog) {
+        Add-Content -Path $script:LogPath -Value "$(Get-Date): ProgressBar Maximum set to $script:TotalComputers" -ErrorAction SilentlyContinue
+    }
 
+    # Create runspace pool
+    $script:RunspacePool = [runspacefactory]::CreateRunspacePool(1, $numThrottle.Value)
+    $script:RunspacePool.Open()
+
+    foreach ($computer in $computers) {
+        $ps = [powershell]::Create()
+        $ps.RunspacePool = $script:RunspacePool
+        $null = $ps.AddScript({
+            param($computer, $scriptBlock)
+            try {
+                $result = Invoke-Command -ComputerName $computer -ScriptBlock $scriptBlock -ErrorAction Stop
+                [PSCustomObject]@{
+                    ComputerName = $computer
+                    Status = "Success"
+                    Output = if ($null -eq $result) { "No output" } else { $result | Out-String }
+                    Timestamp = Get-Date
+                }
+            } catch {
+                [PSCustomObject]@{
+                    ComputerName = $computer
+                    Status = if ($_.Exception.Message -match "not online") { "Offline" } else { "Error" }
+                    Output = $_.Exception.Message
+                    Timestamp = Get-Date
+                }
+            }
+        }).AddArgument($computer).AddArgument($scriptBlock)
+        $handle = $ps.BeginInvoke()
+        $null = $script:PSInstances.Add([PSCustomObject]@{
+            PowerShell = $ps
+            Handle = $handle
+            Computer = $computer
+        })
+        if ($script:EnableDebugLog) {
+            Add-Content -Path $script:LogPath -Value "$(Get-Date): Started runspace for $computer" -ErrorAction SilentlyContinue
+        }
+    }
+
+    # Create timer to monitor runspaces
     $script:Timer = New-Object System.Windows.Forms.Timer
-    $script:Timer.Interval = 1000
+    $script:Timer.Interval = 500
     $script:Timer.Add_Tick({
-        if ($script:Job -and $script:Job.State -eq "Running" -and -not $script:IsCancelled) {
-            $completedJobs = $script:Job.ChildJobs | Where-Object { $_.State -ne "Running" }
-            $processedCount = $completedJobs.Count
-            $progressBar.Value = $processedCount
-            $lblStatus.Text = "Processing... ($processedCount of $totalComputers)"
-            
-            $partialResults = $script:Job | Receive-Job -Keep -ErrorAction SilentlyContinue
-            foreach ($item in $partialResults) {
-                if (-not ($script:ResultsList | Where-Object { $_.ComputerName -eq $item.PSComputerName })) {
+        param (
+            $sender,
+            $e,
+            $TimerInstance = $script:Timer,
+            $RunspacePoolInstance = $script:RunspacePool,
+            $PSInstances = $script:PSInstances,
+            $LogPath = $script:LogPath,
+            $CsvPath = $script:CsvPath,
+            $IsCancelled = $script:IsCancelled,
+            $TotalComputers = $script:TotalComputers,
+            $DataGridViewInstance = $script:CurrentDataGridView,
+            $ProgressBarInstance = $progressBar,
+            $LabelStatus = $lblStatus,
+            $ButtonRun = $btnRun,
+            $ButtonCancel = $btnCancel,
+            $SaveCsv = $chkSaveCsv.Checked,
+            $MainForm = $form
+        )
+
+        if ($IsCancelled) {
+            $TimerInstance.Stop()
+            foreach ($instance in $PSInstances) {
+                $instance.PowerShell.Stop()
+                $instance.PowerShell.Dispose()
+            }
+            $RunspacePoolInstance.Close()
+            $RunspacePoolInstance.Dispose()
+            $MainForm.Invoke([Action]{ 
+                $LabelStatus.Text = "Execution cancelled"
+                $ButtonRun.Enabled = $true
+                $ButtonCancel.Enabled = $false
+                $LabelStatus.Refresh()
+            })
+            if ($script:EnableDebugLog) {
+                Add-Content -Path $LogPath -Value "$(Get-Date): Execution cancelled" -ErrorAction SilentlyContinue
+            }
+            return
+        }
+
+        if ($script:EnableDebugLog) {
+            Add-Content -Path $LogPath -Value "$(Get-Date): Timer tick, Instances: $($PSInstances.Count)" -ErrorAction SilentlyContinue
+        }
+        $completed = $PSInstances | Where-Object { $_.Handle.IsCompleted }
+        foreach ($instance in $completed) {
+            try {
+                $result = $instance.PowerShell.EndInvoke($instance.Handle)
+                if ($script:EnableDebugLog) {
+                    Add-Content -Path $LogPath -Value "$(Get-Date): EndInvoke for $($instance.Computer), Raw Result: $($result | Out-String)" -ErrorAction SilentlyContinue
+                }
+                if ($null -eq $result) {
                     $result = [PSCustomObject]@{
-                        ComputerName = $item.PSComputerName
-                        Output       = if ($item) { $item | Out-String } else { "No output" }
-                        Status       = "Success"
-                        Timestamp    = Get-Date
-                    }
-                    $script:ResultsList.Add($result) | Out-Null
-                    if ($chkSaveCsv.Checked -and $script:CsvPath) {
-                        $result | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1 | Out-File -FilePath $script:CsvPath -Append -Encoding UTF8 -ErrorAction SilentlyContinue
+                        ComputerName = $instance.Computer
+                        Status = "Error"
+                        Output = "No result returned"
+                        Timestamp = Get-Date
                     }
                 }
-            }
-
-            $failedJobs = $script:Job.ChildJobs | Where-Object { $_.State -eq "Failed" }
-            foreach ($job in $failedJobs) {
-                $computer = $job.Location
-                if (-not ($script:ResultsList | Where-Object { $_.ComputerName -eq $computer })) {
-                    $errorMessage = $job.ChildJobs[0].Error | Out-String
-                    $result = [PSCustomObject]@{
-                        ComputerName = $computer
-                        Output       = "[Error]: $errorMessage"
-                        Status       = if ($errorMessage -match "not online") { "Offline" } else { "Error" }
-                        Timestamp    = Get-Date
+                if ($script:EnableDebugLog) {
+                    Add-Content -Path $LogPath -Value "$(Get-Date): Processed $($result.ComputerName), Status: $($result.Status), Output: $($result.Output)" -ErrorAction SilentlyContinue
+                }
+                if ($DataGridViewInstance -and -not $DataGridViewInstance.IsDisposed) {
+                    $DataGridViewInstance.Invoke([Action]{ $DataGridViewInstance.Rows.Add($result.ComputerName, $result.Status, $result.Timestamp, $result.Output.Trim()) })
+                    if ($script:EnableDebugLog) {
+                        Add-Content -Path $LogPath -Value "$(Get-Date): Added row to DataGridView for $($instance.Computer)" -ErrorAction SilentlyContinue
                     }
-                    $script:ResultsList.Add($result) | Out-Null
-                    if ($chkSaveCsv.Checked -and $script:CsvPath) {
-                        $result | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1 | Out-File -FilePath $script:CsvPath -Append -Encoding UTF8 -ErrorAction SilentlyContinue
+                } else {
+                    if ($script:EnableDebugLog) {
+                        Add-Content -Path $LogPath -Value "$(Get-Date): DataGridView is null or disposed for $($instance.Computer)" -ErrorAction SilentlyContinue
                     }
                 }
+                if ($SaveCsv -and $CsvPath) {
+                    $result | Export-Csv -Path $CsvPath -NoTypeInformation -Append -ErrorAction SilentlyContinue
+                }
+            } catch {
+                $result = [PSCustomObject]@{
+                    ComputerName = $instance.Computer
+                    Status = "Error"
+                    Output = $_.Exception.Message
+                    Timestamp = Get-Date
+                }
+                if ($script:EnableDebugLog) {
+                    Add-Content -Path $LogPath -Value "$(Get-Date): Processed $($result.ComputerName), Status: Error, Output: $($result.Output)" -ErrorAction SilentlyContinue
+                }
+                if ($DataGridViewInstance -and -not $DataGridViewInstance.IsDisposed) {
+                    $DataGridViewInstance.Invoke([Action]{ $DataGridViewInstance.Rows.Add($result.ComputerName, $result.Status, $result.Timestamp, $result.Output.Trim()) })
+                    if ($script:EnableDebugLog) {
+                        Add-Content -Path $LogPath -Value "$(Get-Date): Added row to DataGridView for $($instance.Computer)" -ErrorAction SilentlyContinue
+                    }
+                } else {
+                    if ($script:EnableDebugLog) {
+                        Add-Content -Path $LogPath -Value "$(Get-Date): DataGridView is null or disposed for $($instance.Computer)" -ErrorAction SilentlyContinue
+                    }
+                }
+                if ($SaveCsv -and $CsvPath) {
+                    $result | Export-Csv -Path $CsvPath -NoTypeInformation -Append -ErrorAction SilentlyContinue
+                }
             }
-
-            if ($totalComputers -gt 0 -and ($processedCount % $updateInterval -eq 0 -or $processedCount -eq $totalComputers)) {
-                Update-DataGridView -results $script:ResultsList
+            $instance.PowerShell.Dispose()
+            $PSInstances.Remove($instance)
+            if ($script:EnableDebugLog) {
+                Add-Content -Path $LogPath -Value "$(Get-Date): Removed runspace for $($instance.Computer)" -ErrorAction SilentlyContinue
             }
         }
-        elseif ($script:Job -and ($script:Job.State -ne "Running" -or $script:IsCancelled)) {
-            if ($script:Timer) {
-                $script:Timer.Stop()
-                $script:Timer.Dispose()
-                $script:Timer = $null
-            }
 
-            if ($script:IsCancelled) {
-                if ($script:Job) {
-                    $script:Job | Stop-Job -ErrorAction SilentlyContinue
-                    $script:Job | Remove-Job -Force -ErrorAction SilentlyContinue
-                    $script:Job = $null
+        $processedCount = [Math]::Max(0, [Math]::Min($TotalComputers, $TotalComputers - $PSInstances.Count))
+        if ($script:EnableDebugLog) {
+            Add-Content -Path $LogPath -Value "$(Get-Date): Progress update - Processed: $processedCount, Total: $TotalComputers" -ErrorAction SilentlyContinue
+        }
+        try {
+            $MainForm.Invoke([Action]{ 
+                $ProgressBarInstance.Value = $processedCount
+                $LabelStatus.Text = "Processing... ($processedCount of $TotalComputers)"
+                $ProgressBarInstance.Refresh()
+                $LabelStatus.Refresh()
+                if ($script:EnableDebugLog) {
+                    Add-Content -Path $LogPath -Value "$(Get-Date): UI updated - ProgressBar: $processedCount, Label: 'Processing... ($processedCount of $TotalComputers)'" -ErrorAction SilentlyContinue
                 }
-                $lblStatus.Text = "Execution cancelled"
+            })
+        } catch {
+            if ($script:EnableDebugLog) {
+                Add-Content -Path $LogPath -Value "$(Get-Date): Failed to update UI: $($_.Exception.Message)" -ErrorAction SilentlyContinue
             }
-            else {
-                if ($script:Job) {
-                    $finalResults = $script:Job | Receive-Job -ErrorAction SilentlyContinue -ErrorVariable jobErrors
-                    $script:Job | Remove-Job -Force -ErrorAction SilentlyContinue
-                    $script:Job = $null
-                    
-                    foreach ($item in $finalResults) {
-                        if (-not ($script:ResultsList | Where-Object { $_.ComputerName -eq $item.PSComputerName })) {
-                            $result = [PSCustomObject]@{
-                                ComputerName = $item.PSComputerName
-                                Output       = if ($item) { $item | Out-String } else { "No output" }
-                                Status       = "Success"
-                                Timestamp    = Get-Date
-                            }
-                            $script:ResultsList.Add($result) | Out-Null
-                            if ($chkSaveCsv.Checked -and $script:CsvPath) {
-                                $result | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1 | Out-File -FilePath $script:CsvPath -Append -Encoding UTF8 -ErrorAction SilentlyContinue
-                            }
-                        }
-                    }
-
-                    foreach ($error in $jobErrors) {
-                        $computer = $error.TargetObject
-                        if (-not ($script:ResultsList | Where-Object { $_.ComputerName -eq $computer })) {
-                            $errorMessage = $error.Exception.Message
-                            $result = [PSCustomObject]@{
-                                ComputerName = $computer
-                                Output       = "[Error]: $errorMessage"
-                                Status       = if ($errorMessage -match "not online") { "Offline" } else { "Error" }
-                                Timestamp    = Get-Date
-                            }
-                            $script:ResultsList.Add($result) | Out-Null
-                            if ($chkSaveCsv.Checked -and $script:CsvPath) {
-                                $result | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1 | Out-File -FilePath $script:CsvPath -Append -Encoding UTF8 -ErrorAction SilentlyContinue
-                            }
-                        }
-                    }
-
-                    foreach ($computer in $computers) {
-                        if (-not ($script:ResultsList | Where-Object { $_.ComputerName -eq $computer })) {
-                            $result = [PSCustomObject]@{
-                                ComputerName = $computer
-                                Output       = "[No Response]"
-                                Status       = "No Response"
-                                Timestamp    = Get-Date
-                            }
-                            $script:ResultsList.Add($result) | Out-Null
-                            if ($chkSaveCsv.Checked -and $script:CsvPath) {
-                                $result | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1 | Out-File -FilePath $script:CsvPath -Append -Encoding UTF8 -ErrorAction SilentlyContinue
-                            }
-                        }
-                    }
+        }
+        
+        if ($PSInstances.Count -eq 0) {
+            $TimerInstance.Stop()
+            $RunspacePoolInstance.Close()
+            $RunspacePoolInstance.Dispose()
+            try {
+                $MainForm.Invoke([Action]{ 
+                    $LabelStatus.Text = if ($SaveCsv -and $CsvPath) { "Completed - Results saved to: $CsvPath" } else { "Completed" }
+                    $ButtonRun.Enabled = $true
+                    $ButtonCancel.Enabled = $false
+                    $LabelStatus.Refresh()
+                })
+            } catch {
+                if ($script:EnableDebugLog) {
+                    Add-Content -Path $LogPath -Value "$(Get-Date): Failed to update UI on completion: $($_.Exception.Message)" -ErrorAction SilentlyContinue
                 }
-
-                Update-DataGridView -results $script:ResultsList
-                $progressBar.Value = $totalComputers
-                $lblStatus.Text = if ($chkSaveCsv.Checked) { "Completed - Results saved to: $script:CsvPath" } else { "Completed" }
             }
-
-            $btnRun.Enabled = $true
-            $btnCancel.Enabled = $false
-            Get-PSSession | Remove-PSSession -ErrorAction SilentlyContinue
+            if ($script:EnableDebugLog) {
+                Add-Content -Path $LogPath -Value "$(Get-Date): Execution completed" -ErrorAction SilentlyContinue
+            }
         }
     })
-    if ($script:Timer) {
-        $script:Timer.Start()
+    $script:Timer.Start()
+    if ($script:EnableDebugLog) {
+        Add-Content -Path $script:LogPath -Value "$(Get-Date): Started runspaces with throttle $($numThrottle.Value)" -ErrorAction SilentlyContinue
     }
 })
 
 $btnCancel.Add_Click({
     $script:IsCancelled = $true
     $lblStatus.Text = "Cancelling execution..."
+    if ($script:EnableDebugLog) {
+        Add-Content -Path $script:LogPath -Value "$(Get-Date): Cancel requested" -ErrorAction SilentlyContinue
+    }
 })
 
+# Clean up on form close
 $form.Add_FormClosing({
     $script:IsCancelled = $true
-    if ($script:Job -and $script:Job.State -eq "Running") {
-        $script:Job | Stop-Job -ErrorAction SilentlyContinue
-        $script:Job | Remove-Job -Force -ErrorAction SilentlyContinue
-        $script:Job = $null
-    }
-    if ($script:Timer) {
+    if ($script:Timer -and $script:Timer.Enabled) {
         $script:Timer.Stop()
         $script:Timer.Dispose()
-        $script:Timer = $null
     }
+    if ($script:RunspacePool -and $script:RunspacePool.RunspacePoolStateInfo.State -eq 'Opened') {
+        $script:RunspacePool.Close()
+        $script:RunspacePool.Dispose()
+    }
+    if ($script:CurrentResultsForm -and -not $script:CurrentResultsForm.IsDisposed) {
+        $script:CurrentResultsForm.Close()
+    }
+    foreach ($instance in $script:PSInstances) {
+        $instance.PowerShell.Dispose()
+    }
+    $script:PSInstances.Clear()
     Get-PSSession | Remove-PSSession -ErrorAction SilentlyContinue
+    if ($script:EnableDebugLog) {
+        Add-Content -Path $script:LogPath -Value "$(Get-Date): Form closing" -ErrorAction SilentlyContinue
+    }
 })
 
+# Initialize log file
 $remoteICMDir = "$env:USERPROFILE\Desktop\RemoteICM"
 if (-not (Test-Path $remoteICMDir)) { New-Item -Path $remoteICMDir -ItemType Directory -Force | Out-Null }
-if (Test-Path $script:LogPath) { Clear-Content -Path $script:LogPath }
-Add-Content -Path $script:LogPath -Value "$(Get-Date): Script initialized" -ErrorAction SilentlyContinue
+if ($script:EnableDebugLog) {
+    if (Test-Path $script:LogPath) { Clear-Content -Path $script:LogPath }
+    Add-Content -Path $script:LogPath -Value "$(Get-Date): Script initialized" -ErrorAction SilentlyContinue
+}
 
+# Show the form
 $form.ShowDialog()
