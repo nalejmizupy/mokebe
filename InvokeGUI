@@ -1,6 +1,33 @@
 Add-Type -AssemblyName System.Windows.Forms
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
+# Define P/Invoke methods to hide console window
+Add-Type @"
+    using System;
+    using System.Runtime.InteropServices;
+
+    public class ConsoleHelper {
+        [DllImport("kernel32.dll")]
+        public static extern IntPtr GetConsoleWindow();
+
+        [DllImport("user32.dll")]
+        public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        public const int SW_HIDE = 0;
+    }
+"@
+
+# Function to hide PowerShell console window
+function Hide-Console {
+    $consoleWindow = [ConsoleHelper]::GetConsoleWindow()
+    if ($consoleWindow -ne [IntPtr]::Zero) {
+        [ConsoleHelper]::ShowWindow($consoleWindow, [ConsoleHelper]::SW_HIDE) | Out-Null
+    }
+}
+
+# Hide console window at script start
+Hide-Console
+
 # Global variables
 $script:LogPath = "$env:USERPROFILE\Desktop\RemoteICM\DebugLog.txt"
 $script:CsvPath = $null
@@ -625,12 +652,21 @@ $form.Add_FormClosing({
     }
 })
 
-# Initialize log file
-$remoteICMDir = "$env:USERPROFILE\Desktop\RemoteICM"
-if (-not (Test-Path $remoteICMDir)) { New-Item -Path $remoteICMDir -ItemType Directory -Force | Out-Null }
-if ($script:EnableDebugLog) {
-    if (Test-Path $script:LogPath) { Clear-Content -Path $script:LogPath }
-    Add-Content -Path $script:LogPath -Value "$(Get-Date): Script initialized" -ErrorAction SilentlyContinue
+# Initialize log file with directory check
+try {
+    $remoteICMDir = "$env:USERPROFILE\Desktop\RemoteICM"
+    if (-not (Test-Path $remoteICMDir)) {
+        New-Item -Path $remoteICMDir -ItemType Directory -Force -ErrorAction Stop | Out-Null
+    }
+    if ($script:enableDebugLog) {
+        if (Test-Path $script:logPath) { 
+            Clear-Content -Path $script:logPath -ErrorAction Stop 
+        }
+        Add-Content -Path $script:logPath -Value "$(Get-Date): Script initialized" -ErrorAction SilentlyContinue
+    }
+}
+catch {
+    [System.Windows.Forms.MessageBox]::Show("Failed to initialize log file: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
 }
 
 # Show the form
